@@ -1,9 +1,8 @@
-<img width="823" height="733" alt="Screenshot 2026-11-17 at 12 37 36 PM" src="https://github.com/user-attachments/assets/d61a5932-01a6-40c7-ace2-178902d27939" />
-
-
 # 诗词助手（ShiCi）
 
 一个用于古典诗词格律创作的 macOS 应用：逐字标注平仄、检查近体诗与词谱格律、显示对/粘，并管理个人词句收藏。
+
+<img width="823" height="733" alt="Screenshot 2026-11-17 at 12 37 36 PM" src="https://github.com/user-attachments/assets/d61a5932-01a6-40c7-ace2-178902d27939" />
 
 ## 功能
 
