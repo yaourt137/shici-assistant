@@ -73,6 +73,9 @@ struct SidebarView: View {
             Section("工具") {
                 Label("韵书", systemImage: "character.book.closed")
                     .tag(SidebarItem.rhymeBook)
+                    .accessibilityIdentifier("sidebarRhymeBook")
+                Label("艺文类聚", systemImage: "books.vertical.circle")
+                    .tag(SidebarItem.leiju)
                 Label("语料包", systemImage: "books.vertical")
                     .tag(SidebarItem.packs)
             }

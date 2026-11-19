@@ -3,7 +3,7 @@ import Foundation
 /// MCP 服务（JSON-RPC 2.0，按行分隔，经 stdio 传输）。只提供数据读写与格律查询，不含任何 AI 逻辑。
 public final class MCPServer {
     public static let serverName = "shici-mcp"
-    public static let serverVersion = "0.1.0"
+    public static let serverVersion = "0.2.0"
     static let supportedProtocolVersions = ["2025-06-18", "2025-03-26", "2024-11-05"]
 
     private let service: PoetryService
@@ -72,7 +72,7 @@ public final class MCPServer {
                 "protocolVersion": .string(version),
                 "capabilities": ["tools": [:]],
                 "serverInfo": ["name": .string(MCPServer.serverName), "version": .string(MCPServer.serverVersion)],
-                "instructions": "诗词助手：格律校验、字音查询、按平仄检索替换候选、收藏与标签。agent 写入的收藏会标记来源，默认进入收件箱等待用户确认。",
+                "instructions": "诗词助手：格律校验、字音查询、按平仄检索替换候选、收藏与标签，以及声律启蒙、佩文韵府、艺文类聚的查询。agent 写入的收藏会标记来源，默认进入收件箱等待用户确认。",
             ]
         case "notifications/initialized", "notifications/cancelled":
             return .null
@@ -292,6 +292,43 @@ public final class MCPServer {
             onLibraryChange()
             return ("已为「\(phrase.text)」添加标签：\(tags.joined(separator: "、"))", phraseJSON(phrase))
 
+        case "find_yunzao":
+            return try await findYunzao(arguments)
+
+        case "find_couplet":
+            let text = try string(arguments, "text") ?? ""
+            let suggestions = Array(try await service.couplets(matching: text).prefix(try limit(arguments, default: 30)))
+            let items: [JSONValue] = suggestions.map { ["counterpart": .string($0.counterpart), "source": .string(describe($0.source))] }
+            let summary = suggestions.isEmpty ? "声律启蒙与佩文韵府对语中没有「\(text)」的对"
+                : suggestions.map { "\($0.counterpart)（\(describe($0.source))）" }.joined(separator: "、")
+            return (summary, ["text": .string(text), "couplets": .array(items)])
+
+        case "search_leiju":
+            try await requireClassic(.yiwenLeiju)
+            let query = try string(arguments, "query", required: false)
+            let topicName = try string(arguments, "topic", required: false)
+            guard query != nil || topicName != nil else { throw RPCError.invalidParams("query 与 topic 至少给出一个") }
+            let count = try limit(arguments, default: 20, max: 100)
+            var entries: [LeijuEntry]
+            if let topicName {
+                let target = dictionary.converter.simplified(topicName)
+                var matched: [LeijuEntry] = []
+                for topic in try await service.classics.leijuTopics() where dictionary.converter.simplified(topic.topic).contains(target) {
+                    matched += try await service.classics.leijuEntries(in: topic)
+                }
+                let norm = query.map(dictionary.converter.simplified)
+                entries = matched.filter { entry in norm.map { dictionary.converter.simplified(entry.text).contains($0) } ?? true }
+            } else {
+                entries = try await service.classics.searchLeiju(query ?? "", limit: count)
+            }
+            entries = Array(entries.prefix(count))
+            let items: [JSONValue] = entries.map {
+                ["part": .string($0.part), "topic": .string($0.topic), "genre": .string($0.genre ?? "事"), "text": .string($0.text)]
+            }
+            let summary = entries.isEmpty ? "艺文类聚中没有找到"
+                : entries.map { "【\($0.part)·\($0.topic)·\($0.genre ?? "事")】\($0.text)" }.joined(separator: "\n")
+            return (summary, ["entries": .array(items)])
+
         case "import_pack":
             try requireWritable()
             let path = try string(arguments, "path") ?? ""
@@ -304,6 +341,59 @@ public final class MCPServer {
         default:
             throw RPCError(code: -32601, message: "未知工具：\(name)")
         }
+    }
+
+    // MARK: - 典籍
+
+    private func requireClassic(_ work: ClassicWork) async throws {
+        guard try await service.classics.installed().contains(where: { $0.work == work }) else {
+            throw RPCError.invalidParams("尚未下载《\(work.name)》，请先在诗词助手的「语料包」页面下载")
+        }
+    }
+
+    private func describe(_ source: CoupletSuggestion.Source) -> String {
+        switch source {
+        case .shengLv(let index):
+            "声律启蒙·\(service.shengLv.sections.indices.contains(index) ? service.shengLv.sections[index].title : "?")"
+        case .yunfu(let head, let groupID):
+            "佩文韵府对语·\(head)（\(service.dictionary.groups.indices.contains(groupID) ? service.dictionary.groups[groupID].displayName : "?")）"
+        }
+    }
+
+    private func findYunzao(_ arguments: JSONValue) async throws -> (String, JSONValue) {
+        try await requireClassic(.peiwenYunfu)
+        let dictionary = service.dictionary
+        let raw = try string(arguments, "char") ?? ""
+        guard raw.count == 1, let character = raw.first, TextSegmenter.isHan(character) else {
+            throw RPCError.invalidParams("char 应为单个汉字")
+        }
+        let pattern = try string(arguments, "pattern", required: false) ?? "中中"
+        var slots: [ToneSlot] = []
+        for symbol in pattern {
+            guard let slot = ToneSlot(rawValue: symbol) else { throw RPCError.invalidParams("pattern 只能由平、仄、中组成") }
+            slots.append(slot)
+        }
+        var rhyme: RhymeRequirement?
+        if arguments["same_rhyme"]?.boolValue == true {
+            let tones = dictionary.tones(of: character, in: .pingshui)
+            guard let tone = slots.last?.tone ?? (tones.count == 1 ? tones.first : nil) else {
+                throw RPCError.invalidParams("「\(character)」平仄两读，same_rhyme 时 pattern 末位须为平或仄")
+            }
+            guard let key = dictionary.readings(of: character, in: .pingshui).first(where: { $0.tone == tone })?.rhyme else {
+                throw RPCError.invalidParams("「\(character)」在平水韵中没有\(tone.rawValue)声读音")
+            }
+            rhyme = RhymeRequirement(key: key, tone: tone)
+        }
+        let constraint = SlotConstraint(slots: slots, rhyme: rhyme, book: .pingshui)
+        let entries = try await service.yunzaoCandidates(for: constraint, lastCharacter: character,
+                                                         limit: try limit(arguments, default: 40))
+        let items: [JSONValue] = entries.map { entry in
+            ["phrase": .string(entry.phrase), "head": .string(entry.head), "kind": .string(entry.kind.displayName),
+             "rhyme": .string(dictionary.groups[entry.groupID].displayName), "note": .string(entry.note)]
+        }
+        let summary = entries.isEmpty ? "佩文韵府中没有符合「\(pattern)」的韵藻"
+            : entries.map { "\($0.phrase)　\($0.note.prefix(40))" }.joined(separator: "\n")
+        return (summary, ["pattern": .string(pattern), "entries": .array(items)])
     }
 }
 
@@ -360,6 +450,22 @@ enum MCPTools {
             "id": ["type": "string", "description": "收藏 UUID"],
             "tags": ["type": "array", "items": ["type": "string"]],
          ], required: ["id", "tags"])],
+        ["name": "find_yunzao", "description": "佩文韵府韵藻：以某字结尾、或与某字同韵（平水韵）的词语及出处，按平仄过滤。需先在 App 中下载佩文韵府。",
+         "inputSchema": schema([
+            "char": ["type": "string", "description": "韵字（单个汉字）"],
+            "pattern": ["type": "string", "description": "由平、仄、中组成，长度即词语字数，默认「中中」"],
+            "same_rhyme": ["type": "boolean", "description": "true 时取与 char 同韵各字的韵藻；默认只取以 char 结尾的"],
+            "limit": limitProperty,
+         ], required: ["char"])],
+        ["name": "find_couplet", "description": "对仗：《声律启蒙》与佩文韵府「对语」中与该词相对的另一边。",
+         "inputSchema": schema(["text": ["type": "string", "description": "一边的词，如「云」「来鸿」"], "limit": limitProperty],
+                               required: ["text"])],
+        ["name": "search_leiju", "description": "检索《艺文类聚》：按子目（如「衡山」「七月七日」）或全文关键词。需先在 App 中下载艺文类聚。",
+         "inputSchema": schema([
+            "query": ["type": "string", "description": "全文关键词（繁简不拘）"],
+            "topic": ["type": "string", "description": "子目名，部分匹配"],
+            "limit": limitProperty,
+         ])],
         ["name": "import_pack", "description": "安装并导入语料包目录（含 manifest.json）。",
          "inputSchema": schema(["path": ["type": "string", "description": "语料包目录的绝对路径"]], required: ["path"])],
     ]

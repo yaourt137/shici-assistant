@@ -20,6 +20,7 @@ struct ContentView: View {
         }
         .task {
             await model.importPendingPacks()
+            await model.importPendingClassics()
             if model.selection == nil {
                 model.selection = model.poems.first.map { .poem($0.id) } ?? .allPhrases
             }
@@ -52,6 +53,8 @@ struct ContentView: View {
             }
         case .rhymeBook:
             RhymeBrowserView()
+        case .leiju:
+            LeijuBrowserView()
         case .packs:
             PackManagerView()
         case nil:

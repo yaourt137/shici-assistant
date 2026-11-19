@@ -13,6 +13,7 @@ struct EditorInspector: View {
     enum Tab: String, CaseIterable, Identifiable {
         case candidates = "候选"
         case related = "相关诗句"
+        case classics = "典籍"
         case character = "字音"
         var id: String { rawValue }
     }
@@ -58,6 +59,9 @@ struct EditorInspector: View {
                                     currentText: selectedText, onReplace: onReplace)
                 case .related:
                     RelatedPanel(phrase: selectedText, line: lineText ?? selectedText)
+                case .classics:
+                    ClassicsPanel(constraint: selection.flatMap { analysis.constraint(line: $0.line, range: $0.range) },
+                                  currentText: selectedText, onReplace: onReplace)
                 case .character:
                     CharacterPanel(characters: selectedCharacters, book: analysis.book, onChooseReading: onChooseReading)
                 }
@@ -506,6 +510,7 @@ struct CharacterPanel: View {
                         }
                     }
                     CustomReadingRows(character: character)
+                    YunfuGlossRows(character: character)
                     HStack {
                         SouYunButtons(character: character)
                     }

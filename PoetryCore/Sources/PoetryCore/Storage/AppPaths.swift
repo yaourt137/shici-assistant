@@ -5,6 +5,8 @@ import notify
 /// - `library.sqlite`：作品、收藏、标签（用户数据）
 /// - `corpus.sqlite`：语料索引（可由语料包重建）
 /// - `Packs/`：已安装的语料包
+/// - `classics.sqlite`：典籍索引（可由 `Classics/` 中的文本重建）
+/// - `Classics/`：下载的典籍文本
 public struct AppPaths: Sendable {
     public static let environmentKey = "SHICI_DATA_DIR"
     public static let launchArgument = "-ShiCiDataDirectory"
@@ -31,10 +33,13 @@ public struct AppPaths: Sendable {
     public var library: URL { root.appendingPathComponent("library.sqlite") }
     public var corpus: URL { root.appendingPathComponent("corpus.sqlite") }
     public var packs: URL { root.appendingPathComponent("Packs", isDirectory: true) }
+    public var classicsIndex: URL { root.appendingPathComponent("classics.sqlite") }
+    public var classics: URL { root.appendingPathComponent("Classics", isDirectory: true) }
 
     public func createDirectories() throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: packs, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: classics, withIntermediateDirectories: true)
     }
 }
 

@@ -18,6 +18,11 @@
 - **语料**
   - 可一键下载并导入 [chinese-poetry](https://github.com/chinese-poetry/chinese-poetry) 的唐诗、宋词，用于替换候选、前人用例、相关诗句与出处反查。
   - 查看语料全文时可标注平仄与韵部。
+- **典籍**
+  - 《声律启蒙》（内置）：在「韵书」中按平水韵平声韵查看各节，韵脚高亮，不属本韵的韵脚注明实际韵目；字表中标出它用作韵脚的字。
+  - 《佩文韵府》（可下载）：在「韵书」中点选一字，查看字头注、韵藻、对语、摘句；编辑时按所选位置的字数、平仄与韵部给出韵藻（选中整句时含摘句），可直接替换。
+  - 《艺文类聚》（可下载）：按部、子目浏览「事」与各体诗文，可全文检索。
+  - 编辑时选中一个词，可查它在《声律启蒙》与佩文「对语」中的对仗。
 - **收藏**：词句收藏、标签、智能收藏夹、收件箱。
 - **MCP**：附带 `shici-mcp` 服务器，供 Claude Code 等 agent 查字、检查格律、检索与收藏词句。
 
@@ -52,15 +57,15 @@ cd PoetryCore && swift build -c release
 claude mcp add shici -- "$(pwd)/.build/release/shici-mcp"
 ```
 
-提供的工具：`lookup_char`、`check_poem`、`list_forms`、`find_candidates`、`find_usages`、`search_phrases`、`add_phrase`、`tag_phrase` 等。是否允许 agent 写入、写入的收藏是否先进收件箱，可在 App 的「设置」中调整。
+提供的工具：`lookup_char`、`check_poem`、`list_forms`、`find_candidates`、`find_usages`、`search_phrases`、`add_phrase`、`tag_phrase`，以及查典籍的 `find_yunzao`（佩文韵藻）、`find_couplet`（对仗）、`search_leiju`（艺文类聚）等。佩文韵府与艺文类聚须先在 App 中下载。是否允许 agent 写入、写入的收藏是否先进收件箱，可在 App 的「设置」中调整。
 
 ## 项目结构
 
 - `ShiCi/`：SwiftUI 应用界面。
-- `PoetryCore/`：格律分析、韵书、语料索引、用户库与 MCP 服务器（Swift Package），业务逻辑均在此并附单元测试。
+- `PoetryCore/`：格律分析、韵书、语料索引、典籍解析与索引、用户库与 MCP 服务器（Swift Package），业务逻辑均在此并附单元测试。
 - `ShiCiUITests/`：UI 测试。
 
-用户数据（作品、收藏、设置、语料索引）保存在 `~/Library/Application Support/ShiCi`。
+用户数据（作品、收藏、设置、语料索引、典籍）保存在 `~/Library/Application Support/ShiCi`。两部典籍下载并导入后约占 170MB（文本约 67MB，索引约 100MB）。
 
 ## 数据来源与许可
 
@@ -72,6 +77,8 @@ claude mcp add shici -- "$(pwd)/.build/release/shici-mcp"
 | 拼音（中华通韵） | [mozillazg/pinyin-data](https://github.com/mozillazg/pinyin-data) | MIT |
 | 繁简字表 | [OpenCC](https://github.com/BYVoid/OpenCC) | Apache-2.0 |
 | 唐诗、宋词语料（运行时下载，不随项目分发） | [chinese-poetry](https://github.com/chinese-poetry/chinese-poetry) | MIT |
+| 声律启蒙 | [维基文库「聲律啓蒙」](https://zh.wikisource.org/wiki/聲律啓蒙) | 公有领域 |
+| 佩文韵府、艺文类聚（运行时下载，不随项目分发） | [漢リポ Kanseki Repository](https://github.com/kanripo)（[KR3k0059](https://github.com/kanripo/KR3k0059)、[KR3k0003](https://github.com/kanripo/KR3k0003)，四库全书文渊阁本） | CC BY-SA 4.0 |
 
 词林正韵不是独立数据，由平水韵韵目结合今音韵母换算而来。
 
@@ -79,3 +86,5 @@ claude mcp add shici -- "$(pwd)/.build/release/shici-mcp"
 
 - 平水韵数据源整理自维基文库，有漏收的字与又读（例如「伎」缺上声纸韵一读）。可在 App 中用「自定义读音」补充。
 - 内置词谱每个词牌只取一种常见体式，建议对照《钦定词谱》复核。
+- 佩文韵府、艺文类聚的原文无标点，条目切分按原书版式推断（如韵藻跨行、引文按行宽合并），个别条目可能切分有误；注文中的「丨」按体例还原，悬停或打开详情可看原文。缺字显示为「〓」或「□」。
+- 典籍按繁简对照查字，不处理异体字：例如佩文韵府把「啼」收在「嗁」下，查「啼」查不到。

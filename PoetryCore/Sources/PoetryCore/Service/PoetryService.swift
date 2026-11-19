@@ -85,6 +85,10 @@ public final class PoetryService {
     private let baseDictionary: CharDictionary
     public let library: LibraryStore
     public let corpus: CorpusIndex
+    /// 下载的典籍（佩文韵府、艺文类聚）。
+    public let classics: ClassicsIndex
+    /// 内置的《声律启蒙》。
+    public let shengLv: ShengLvQiMeng
 
     public init(paths: AppPaths, dictionary: CharDictionary = .shared, tunes: CiTuneLibrary = .bundled) throws {
         try paths.createDirectories()
@@ -95,6 +99,8 @@ public final class PoetryService {
         self.library = try LibraryStore(url: paths.library)
         // 语料索引按内置读音建立，不随补充读音变化。
         self.corpus = try CorpusIndex(url: paths.corpus, dictionary: dictionary)
+        self.classics = try ClassicsIndex(url: paths.classicsIndex, converter: dictionary.converter)
+        self.shengLv = try ShengLvQiMeng.loadBundled(groups: dictionary.groups)
         try reloadCustomReadings()
     }
 
@@ -249,4 +255,120 @@ public final class PoetryService {
             try FileManager.default.removeItem(at: directory)
         }
     }
+
+    // MARK: - 典籍
+
+    private func classicDirectory(_ work: ClassicWork) -> URL {
+        paths.classics.appendingPathComponent(work.rawValue, isDirectory: true)
+    }
+
+    /// 下载（已下载则跳过）并导入典籍，返回条目数。
+    nonisolated(nonsending) public func installClassic(_ work: ClassicWork, session: URLSession = .shared,
+                                                       progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> Int {
+        let directory = try await ClassicsDownloader.download(work, into: paths.classics, session: session)
+        return try await classics.importWork(work, from: directory, groups: dictionary.groups, progress: progress)
+    }
+
+    /// 已下载但尚未导入、或索引格式过旧的典籍。
+    nonisolated(nonsending) public func pendingClassics() async throws -> [ClassicWork] {
+        let installed = try await classics.installed()
+        return ClassicWork.allCases.filter { work in
+            let info = installed.first { $0.work == work }
+            return (info == nil || info?.needsReindex == true)
+                && FileManager.default.fileExists(atPath: classicDirectory(work).path)
+        }
+    }
+
+    /// 导入已下载的典籍（用于索引格式更新后重建，或上次导入中断）。
+    @discardableResult
+    nonisolated(nonsending) public func reimportClassic(_ work: ClassicWork,
+                                                        progress: @Sendable (ImportProgress) -> Void = { _ in }) async throws -> Int {
+        let directory = try ClassicsDownloader.textDirectory(of: work, in: classicDirectory(work))
+        return try await classics.importWork(work, from: directory, groups: dictionary.groups, progress: progress)
+    }
+
+    /// 删除典籍：移除索引与下载的文本。
+    nonisolated(nonsending) public func removeClassic(_ work: ClassicWork) async throws {
+        try await classics.delete(work)
+        let directory = classicDirectory(work)
+        if FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    /// 对仗：《声律启蒙》在前，佩文韵府「对语」在后（未下载时只有前者）。
+    nonisolated(nonsending) public func couplets(matching text: String) async throws -> [CoupletSuggestion] {
+        let fromPrimer = shengLv.couplets(matching: text, converter: dictionary.converter).map { match in
+            CoupletSuggestion(counterpart: match.counterpart, source: .shengLv(sectionIndex: match.couplet.sectionIndex))
+        }
+        let norm = dictionary.converter.simplified(TextSegmenter.hanOnly(text))
+        let fromYunfu = try await classics.duiyu(matching: text).map { entry in
+            let counterpart = dictionary.converter.simplified(entry.phrase) == norm ? (entry.counterpart ?? "") : entry.phrase
+            return CoupletSuggestion(counterpart: counterpart, source: .yunfu(head: entry.head, groupID: entry.groupID))
+        }
+        var seen = Set<String>()
+        return (fromPrimer + fromYunfu).filter { !$0.counterpart.isEmpty && seen.insert(dictionary.converter.simplified($0.counterpart)).inserted }
+    }
+
+    /// 佩文韵府中适合某位置的韵藻（含「增」；选中整句时也有摘句）：字数与平仄合乎约束、同一词语只取一次。
+    /// 有押韵要求时取该韵部各字的韵藻，按韵字在语料中的常用度轮流排列；否则取以 `lastCharacter` 结尾的，按原书顺序。
+    nonisolated(nonsending) public func yunzaoCandidates(for constraint: SlotConstraint, lastCharacter: Character,
+                                                         limit: Int = 300) async throws -> [YunfuEntry] {
+        let heads = constraint.rhyme.map { dictionary.characters(in: $0.key, tone: $0.tone) } ?? [lastCharacter]
+        let rows = try await classics.yunzao(heads: heads, length: constraint.length, limit: 50_000)
+        let dictionary = self.dictionary
+        var seen = Set<String>()
+        let accepted = rows.filter { entry in
+            let norm = dictionary.converter.simplified(entry.phrase)
+            return constraint.accepts(norm, dictionary: dictionary) && seen.insert(norm).inserted
+        }
+        guard constraint.rhyme != nil else { return Array(accepted.prefix(limit)) }
+        let frequencies = try await corpus.characterFrequencies()
+        return YunzaoRanking.interleave(accepted, converter: dictionary.converter, frequencies: frequencies, limit: limit)
+    }
+}
+
+/// 韵藻排序。
+public enum YunzaoRanking {
+    /// 按韵字分组，组按韵字常用度降序（同频按原书先后），再从各组轮流取一条，使常用韵字各有代表。
+    public static func interleave(_ entries: [YunfuEntry], converter: ScriptConverter, frequencies: [Character: Int],
+                                  limit: Int) -> [YunfuEntry] {
+        guard limit > 0 else { return [] }
+        var order: [Character] = []
+        var groups: [Character: [YunfuEntry]] = [:]
+        for entry in entries {
+            guard let head = entry.head.first.map(converter.simplified) else { continue }
+            if groups[head] == nil { order.append(head) }
+            groups[head, default: []].append(entry)
+        }
+        let position = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        order.sort { (frequencies[$0] ?? 0, -(position[$0] ?? 0)) > (frequencies[$1] ?? 0, -(position[$1] ?? 0)) }
+        var result: [YunfuEntry] = []
+        var round = 0
+        while result.count < limit {
+            var added = false
+            for head in order {
+                guard let list = groups[head], round < list.count else { continue }
+                result.append(list[round])
+                added = true
+                if result.count == limit { break }
+            }
+            guard added else { break }
+            round += 1
+        }
+        return result
+    }
+}
+
+/// 对仗建议。
+public struct CoupletSuggestion: Sendable, Hashable {
+    public enum Source: Sendable, Hashable {
+        /// 《声律启蒙》第几节（0...29）。
+        case shengLv(sectionIndex: Int)
+        /// 佩文韵府对语，记韵字与所在韵目。
+        case yunfu(head: String, groupID: Int)
+    }
+
+    public let counterpart: String
+    public let source: Source
 }

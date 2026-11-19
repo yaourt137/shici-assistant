@@ -82,6 +82,25 @@ final class ShiCiUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["地理/河"].waitForExistence(timeout: 5))
     }
 
+    func testClassicsTabShowsPrimerCouplet() {
+        createPoem("白日依山尽，黄河入海流。")
+        let cell = app.descendants(matching: .any)["cell-0-3"]
+        XCTAssertTrue(cell.waitForExistence(timeout: 5))
+        cell.click()
+        app.radioButtons["典籍"].click()
+        XCTAssertTrue(app.descendants(matching: .any)["classicsPanel"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["水"].waitForExistence(timeout: 5), "声律启蒙「山對水」")
+        XCTAssertTrue(app.staticTexts["尚未下载佩文韵府。"].exists)
+    }
+
+    func testRhymeBookShowsPrimerSection() {
+        app.descendants(matching: .any)["sidebarRhymeBook"].firstMatch.click()
+        let mode = app.radioButtons["声律启蒙"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        mode.click()
+        XCTAssertTrue(app.staticTexts["卷上 · 一、東"].waitForExistence(timeout: 5))
+    }
+
     func testFilterExpressionErrorIsShown() {
         app.buttons["sidebarAllPhrases"].firstMatch.click()
         let filter = app.textFields["filterField"]

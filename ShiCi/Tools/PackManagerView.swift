@@ -39,6 +39,8 @@ struct PackManagerView: View {
                 }
             }
 
+            ClassicsPackSection()
+
             GroupBox("扩展语料包格式") {
                 Text("""
                 一个文件夹，内含 manifest.json 与若干 .json（作品数组）或 .jsonl（每行一篇）文件。
@@ -80,6 +82,9 @@ struct PackManagerView: View {
         } message: {
             Text("收藏不受影响；之后可重新安装。")
         }
-        .task { await model.refreshPacks() }
+        .task {
+            await model.refreshPacks()
+            await model.refreshClassics()
+        }
     }
 }

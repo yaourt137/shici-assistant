@@ -10,6 +10,7 @@ enum SidebarItem: Hashable {
     case tag(String)
     case smart(UUID)
     case rhymeBook
+    case leiju
     case packs
 }
 
@@ -30,6 +31,7 @@ final class AppModel {
     var tagUsage: [String: Int] = [:]
     var smartCollections: [SmartCollection] = []
     var packs: [PackInfo] = []
+    var classics: [ClassicInfo] = []
     var selection: SidebarItem?
     var importStatus: ImportStatus?
     var errorMessage: String?
@@ -295,5 +297,61 @@ final class AppModel {
             errorMessage = String(describing: error)
         }
         await refreshPacks()
+    }
+
+    // MARK: - 典籍
+
+    func classicInfo(_ work: ClassicWork) -> ClassicInfo? { classics.first { $0.work == work } }
+
+    func refreshClassics() async {
+        do {
+            classics = try await service.classics.installed()
+        } catch {
+            errorMessage = String(describing: error)
+        }
+    }
+
+    /// 下载并导入典籍；已下载的文本不重复下载。
+    func downloadClassic(_ work: ClassicWork) async {
+        importStatus = ImportStatus(title: work.name, phase: "下载", fraction: nil)
+        defer { importStatus = nil }
+        do {
+            let count = try await service.installClassic(work, progress: classicProgress(work))
+            notice = "已导入《\(work.name)》：\(count) 条"
+        } catch {
+            errorMessage = String(describing: error)
+        }
+        await refreshClassics()
+    }
+
+    /// 启动时导入已下载但未导入、或索引格式过旧的典籍。
+    func importPendingClassics() async {
+        do {
+            for work in try await service.pendingClassics() {
+                importStatus = ImportStatus(title: work.name, phase: "准备", fraction: 0)
+                defer { importStatus = nil }
+                try await service.reimportClassic(work, progress: classicProgress(work))
+            }
+        } catch {
+            errorMessage = String(describing: error)
+        }
+        await refreshClassics()
+    }
+
+    func removeClassic(_ work: ClassicWork) async {
+        do {
+            try await service.removeClassic(work)
+        } catch {
+            errorMessage = String(describing: error)
+        }
+        await refreshClassics()
+    }
+
+    private func classicProgress(_ work: ClassicWork) -> @Sendable (ImportProgress) -> Void {
+        { progress in
+            Task { @MainActor [weak self] in
+                self?.importStatus = ImportStatus(title: work.name, phase: progress.phase, fraction: progress.fraction)
+            }
+        }
     }
 }
