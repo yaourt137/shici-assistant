@@ -84,7 +84,7 @@ claude mcp add shici -- "$(pwd)/.build/release/shici-mcp"
 | 拼音（中华通韵） | [mozillazg/pinyin-data](https://github.com/mozillazg/pinyin-data) | MIT |
 | 繁简字表 | [OpenCC](https://github.com/BYVoid/OpenCC) | Apache-2.0 |
 | 唐诗、宋词语料（运行时下载，不随项目分发） | [chinese-poetry](https://github.com/chinese-poetry/chinese-poetry) | MIT |
-| 先秦至当代语料（运行时下载，不随项目分发） | [Werneror/Poetry](https://github.com/Werneror/Poetry) | 仓库标注 MIT，未说明数据来源 |
+| 先秦至当代语料（运行时下载，不随项目分发） | [Werneror/Poetry](https://github.com/Werneror/Poetry) | MIT |
 | 声律启蒙 | [维基文库「聲律啓蒙」](https://zh.wikisource.org/wiki/聲律啓蒙) | 公有领域 |
 | 笠翁对韵 | [维基文库「笠翁對韻」](https://zh.wikisource.org/wiki/笠翁對韻) | 公有领域 |
 | 佩文韵府、艺文类聚（运行时下载，不随项目分发） | [漢リポ Kanseki Repository](https://github.com/kanripo)（[KR3k0059](https://github.com/kanripo/KR3k0059)、[KR3k0003](https://github.com/kanripo/KR3k0003)，四库全书文渊阁本） | CC BY-SA 4.0 |
