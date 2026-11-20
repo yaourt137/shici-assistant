@@ -13,6 +13,10 @@ public struct PackInfo: Sendable, Hashable, Identifiable {
     public let importedAt: Date
     /// 导入时使用的索引格式；低于 `CorpusIndex.indexFormat` 时需要重新导入。
     public let indexFormat: Int
+    /// 重复作品保留哪一份：数值小的优先。
+    public let priority: Int
+    /// 与优先的语料包重复、因而隐藏的作品数。
+    public let duplicateCount: Int
 
     public var needsReindex: Bool { indexFormat < CorpusIndex.indexFormat }
 }
@@ -30,6 +34,8 @@ public struct ImportReport: Sendable {
     public let gramCount: Int
     public let skippedRecords: Int
     public let errors: [String]
+    /// 与优先的语料包重复、因而隐藏的作品数。
+    public let duplicateCount: Int
 }
 
 /// 语料中的一句（以简体归一显示）。
@@ -63,10 +69,12 @@ public struct CorpusCandidate: Sendable, Hashable {
     public let frequency: Int
 }
 
-/// 语料索引：作品、句、n-gram 片段（替换候选）与 FTS5 双字索引（用例与相关诗句）。
+/// 语料索引：作品、句、n-gram 片段（替换候选）与 FTS5 双字索引（用例与相关诗句）；
+/// 另有对仗联统计（`parallel_*` 表，见 ParallelCouplets.swift），按需由已启用的语料包重建；
+/// 以及跨语料包的重复作品（`work_pairs`、`works.duplicate_of`，见 CorpusDuplicates.swift），查询时只用每组中优先的一份。
 public actor CorpusIndex {
-    private let database: SQLiteDatabase
-    private let dictionary: CharDictionary
+    let database: SQLiteDatabase
+    let dictionary: CharDictionary
 
     /// 只给出现次数达到阈值的片段建候选索引，用于过滤一次性的噪音片段（大语料包）。
     static let largePackWorkCount = 5_000
@@ -82,11 +90,11 @@ public actor CorpusIndex {
         CREATE TABLE IF NOT EXISTS packs (
             id TEXT PRIMARY KEY, name TEXT NOT NULL, version TEXT, era TEXT, script TEXT, license TEXT, source TEXT,
             enabled INTEGER NOT NULL DEFAULT 1, work_count INTEGER NOT NULL, line_count INTEGER NOT NULL, imported_at REAL NOT NULL,
-            index_format INTEGER NOT NULL DEFAULT 1
+            index_format INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS works (
             id INTEGER PRIMARY KEY, pack_id TEXT NOT NULL, ext_id TEXT, title TEXT, author TEXT, dynasty TEXT,
-            form TEXT, tune TEXT, preface TEXT, body TEXT NOT NULL
+            form TEXT, tune TEXT, preface TEXT, body TEXT NOT NULL, text_hash INTEGER, duplicate_of INTEGER
         );
         CREATE INDEX IF NOT EXISTS works_pack ON works(pack_id);
         CREATE TABLE IF NOT EXISTS lines (
@@ -106,34 +114,73 @@ public actor CorpusIndex {
             pack_id TEXT NOT NULL, ch TEXT NOT NULL, freq INTEGER NOT NULL, PRIMARY KEY (pack_id, ch)
         ) WITHOUT ROWID;
         CREATE VIRTUAL TABLE IF NOT EXISTS line_fts USING fts5(tokens, content='', contentless_delete=1);
+        CREATE TABLE IF NOT EXISTS parallel_lines (
+            id INTEGER PRIMARY KEY, work_id INTEGER NOT NULL, idx INTEGER NOT NULL, left TEXT NOT NULL, right TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS parallel_pairs (
+            a TEXT NOT NULL, b TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (a, b)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS parallel_pairs_b ON parallel_pairs(b);
+        CREATE TABLE IF NOT EXISTS parallel_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS work_pairs (
+            a INTEGER NOT NULL, b INTEGER NOT NULL, a_pack TEXT NOT NULL, b_pack TEXT NOT NULL, PRIMARY KEY (a, b)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS work_pairs_a_pack ON work_pairs(a_pack);
+        CREATE INDEX IF NOT EXISTS work_pairs_b_pack ON work_pairs(b_pack);
+        CREATE TABLE IF NOT EXISTS dup_grams (
+            len INTEGER NOT NULL, text TEXT NOT NULL, freq INTEGER NOT NULL, aligned INTEGER NOT NULL, PRIMARY KEY (len, text)
+        ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS dup_chars (ch TEXT PRIMARY KEY, freq INTEGER NOT NULL) WITHOUT ROWID;
         """)
         // 旧版数据库没有 index_format 列：补上，已有语料包按格式 1 处理（需重新导入）。
         let packColumns = try database.query("PRAGMA table_info(packs)") { $0.text(1) }
         if !packColumns.contains("index_format") {
             try database.execute("ALTER TABLE packs ADD COLUMN index_format INTEGER NOT NULL DEFAULT 1")
         }
+        // 去重所需的列：旧库补上；已有作品的全文哈希在下次导入时补算。
+        if !packColumns.contains("priority") {
+            try database.execute("ALTER TABLE packs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+        }
+        let workColumns = try database.query("PRAGMA table_info(works)") { $0.text(1) }
+        if !workColumns.contains("text_hash") {
+            try database.execute("ALTER TABLE works ADD COLUMN text_hash INTEGER")
+        }
+        if !workColumns.contains("duplicate_of") {
+            try database.execute("ALTER TABLE works ADD COLUMN duplicate_of INTEGER")
+        }
+        try database.execute("""
+            CREATE INDEX IF NOT EXISTS works_text_hash ON works(text_hash);
+            CREATE INDEX IF NOT EXISTS works_duplicate ON works(duplicate_of) WHERE duplicate_of IS NOT NULL;
+            """)
     }
 
     // MARK: - 语料包管理
 
     public func packs() throws -> [PackInfo] {
         try database.query("""
-            SELECT id, name, version, era, license, source, enabled, work_count, line_count, imported_at, index_format
-            FROM packs ORDER BY imported_at
+            SELECT p.id, p.name, p.version, p.era, p.license, p.source, p.enabled, p.work_count, p.line_count, p.imported_at,
+                p.index_format, p.priority, COALESCE(d.n, 0)
+            FROM packs p LEFT JOIN (
+                SELECT pack_id, COUNT(*) AS n FROM works WHERE duplicate_of IS NOT NULL GROUP BY pack_id
+            ) d ON d.pack_id = p.id
+            ORDER BY p.imported_at
             """) { row in
             PackInfo(id: row.text(0), name: row.text(1), version: row.optionalText(2), era: row.optionalText(3),
                      license: row.optionalText(4), source: row.optionalText(5), isEnabled: row.int(6) == 1,
                      workCount: row.int(7), lineCount: row.int(8), importedAt: Date(timeIntervalSince1970: row.double(9)),
-                     indexFormat: row.int(10))
+                     indexFormat: row.int(10), priority: row.int(11), duplicateCount: row.int(12))
         }
     }
 
+    /// 启用或停用语料包；重复作品随之重新取舍。
     public func setEnabled(_ enabled: Bool, packID: String) throws {
         try database.run("UPDATE packs SET enabled = ? WHERE id = ?", [.int(enabled ? 1 : 0), .text(packID)])
+        try resolveDuplicates()
     }
 
     public func deletePack(id: String) throws {
         try database.transaction { try removePackData(id) }
+        try resolveDuplicates()
     }
 
     private func removePackData(_ id: String) throws {
@@ -141,6 +188,7 @@ public actor CorpusIndex {
         for table in ["lines", "works", "grams", "char_freq"] {
             try database.run("DELETE FROM \(table) WHERE pack_id = ?", [.text(id)])
         }
+        try database.run("DELETE FROM work_pairs WHERE a_pack = ? OR b_pack = ?", [.text(id), .text(id)])
         try database.run("DELETE FROM packs WHERE id = ?", [.text(id)])
     }
 
@@ -219,6 +267,35 @@ public actor CorpusIndex {
         return result + unclosed
     }
 
+    /// 缺字符号：切句时占一个字位，不作替换候选与对仗统计。
+    static let missingCharacter: Character = "□"
+
+    /// 某长度的片段计数（总次数与落在节奏位上的次数）；含缺字的片段不计。
+    static func countGrams(_ norms: [String], length: Int) -> [String: (total: Int, aligned: Int)] {
+        var counts: [String: (total: Int, aligned: Int)] = [:]
+        for norm in norms where norm.count >= length {
+            let characters = Array(norm)
+            for start in 0...(characters.count - length) {
+                let gram = characters[start..<(start + length)]
+                guard !gram.contains(missingCharacter) else { continue }
+                let text = String(gram)
+                let aligned = CorpusIndex.isRhythmAligned(start: start, length: length, lineLength: characters.count)
+                counts[text, default: (0, 0)].total += 1
+                if aligned { counts[text]?.aligned += 1 }
+            }
+        }
+        return counts
+    }
+
+    /// 字频；缺字符号不计。
+    static func countCharacters(_ norms: [String]) -> [Character: Int] {
+        var counts: [Character: Int] = [:]
+        for norm in norms {
+            for character in norm where character != missingCharacter { counts[character, default: 0] += 1 }
+        }
+        return counts
+    }
+
     static func ftsTokens(_ norm: String) -> String {
         let characters = Array(norm)
         guard characters.count > 1 else { return norm }
@@ -240,7 +317,8 @@ public actor CorpusIndex {
         try database.transaction {
             try removePackData(manifest.id)
             let insertWork = try database.prepare("""
-                INSERT INTO works (pack_id, ext_id, title, author, dynasty, form, tune, preface, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO works (pack_id, ext_id, title, author, dynasty, form, tune, preface, body, text_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)
             let insertLine = try database.prepare("""
                 INSERT INTO lines (pack_id, work_id, idx, norm, len, gu_ping, gu_ze, jin_ping, jin_ze) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -253,14 +331,16 @@ public actor CorpusIndex {
                     progress(ImportProgress(phase: "写入作品", fraction: 0.1 + 0.5 * Double(recordIndex) / Double(records.count)))
                 }
                 let body = record.lines.joined(separator: "\n")
+                // 校注可能跨段（左括号与右括号不在同一段），因此对整篇剥离后再切句。
+                let workNorms = TextSegmenter.segments(of: CorpusIndex.stripAnnotations(body),
+                                                       placeholders: [CorpusIndex.missingCharacter])
+                    .map { converter.simplified(String($0.map(\.character))) }
                 try insertWork.run([packID, .optional(record.externalID), .optional(record.title.map(converter.simplified)),
                                     .optional(record.author.map(converter.simplified)), .optional(record.dynasty),
                                     .optional(record.form), .optional(record.tune.map(converter.simplified)),
-                                    .optional(record.preface), .text(body)])
+                                    .optional(record.preface), .text(body), .integer(CorpusIndex.textHash(workNorms))])
                 let workID = database.lastInsertRowID
-                // 校注可能跨段（左括号与右括号不在同一段），因此对整篇剥离后再切句。
-                for (lineIndex, segment) in TextSegmenter.segments(of: CorpusIndex.stripAnnotations(body)).enumerated() {
-                    let norm = converter.simplified(String(segment.map(\.character)))
+                for (lineIndex, norm) in workNorms.enumerated() {
                     let masks = toneBits.masks(norm)
                     try insertLine.run([packID, .integer(workID), .int(lineIndex), .text(norm), .int(norm.count),
                                         .integer(masks.0), .integer(masks.1), .integer(masks.2), .integer(masks.3)])
@@ -274,17 +354,8 @@ public actor CorpusIndex {
                 INSERT INTO grams (pack_id, text, len, freq, aligned, gu_ping, gu_ze, jin_ping, jin_ze) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)
             for length in CorpusIndex.gramLengths {
-                progress(ImportProgress(phase: "统计\(length)字片段", fraction: 0.6 + 0.1 * Double(length - 1)))
-                var counts: [String: (total: Int, aligned: Int)] = [:]
-                for norm in norms where norm.count >= length {
-                    let characters = Array(norm)
-                    for start in 0...(characters.count - length) {
-                        let aligned = CorpusIndex.isRhythmAligned(start: start, length: length, lineLength: characters.count)
-                        counts[String(characters[start..<(start + length)]), default: (0, 0)].total += 1
-                        if aligned { counts[String(characters[start..<(start + length)])]?.aligned += 1 }
-                    }
-                }
-                for (text, count) in counts where count.total >= threshold {
+                progress(ImportProgress(phase: "统计\(length)字片段", fraction: 0.6 + 0.08 * Double(length - 1)))
+                for (text, count) in CorpusIndex.countGrams(norms, length: length) where count.total >= threshold {
                     let masks = toneBits.masks(text)
                     try insertGram.run([packID, .text(text), .int(length), .int(count.total), .int(count.aligned),
                                         .integer(masks.0), .integer(masks.1), .integer(masks.2), .integer(masks.3)])
@@ -292,31 +363,37 @@ public actor CorpusIndex {
                 }
             }
 
-            progress(ImportProgress(phase: "统计字频", fraction: 0.95))
-            var characterCounts: [Character: Int] = [:]
-            for norm in norms {
-                for character in norm { characterCounts[character, default: 0] += 1 }
-            }
+            progress(ImportProgress(phase: "统计字频", fraction: 0.84))
             let insertCharacter = try database.prepare("INSERT INTO char_freq (pack_id, ch, freq) VALUES (?, ?, ?)")
-            for (character, count) in characterCounts {
+            for (character, count) in CorpusIndex.countCharacters(norms) {
                 try insertCharacter.run([packID, .text(String(character)), .int(count)])
             }
 
             try database.run("""
-                INSERT INTO packs (id, name, version, era, script, license, source, enabled, work_count, line_count, imported_at, index_format)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+                INSERT INTO packs (id, name, version, era, script, license, source, enabled, work_count, line_count, imported_at,
+                    index_format, priority)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
                 """, [packID, .text(manifest.name), .optional(manifest.version), .optional(manifest.era), .optional(manifest.script),
                       .optional(manifest.license), .optional(manifest.source), .int(records.count), .int(norms.count),
-                      .real(Date().timeIntervalSince1970), .int(CorpusIndex.indexFormat)])
+                      .real(Date().timeIntervalSince1970), .int(CorpusIndex.indexFormat), .int(manifest.priority ?? 0)])
+
+            progress(ImportProgress(phase: "查找重复作品", fraction: 0.88))
+            try detectDuplicates(packID: manifest.id)
         }
+        progress(ImportProgress(phase: "取舍重复作品", fraction: 0.95))
+        try resolveDuplicates()
+        let duplicates = try database.query("SELECT COUNT(*) FROM works WHERE pack_id = ? AND duplicate_of IS NOT NULL",
+                                            [.text(manifest.id)]) { $0.int(0) }.first ?? 0
         progress(ImportProgress(phase: "完成", fraction: 1))
         return ImportReport(packID: manifest.id, name: manifest.name, workCount: records.count, lineCount: norms.count,
-                            gramCount: gramCount, skippedRecords: parsed.skipped, errors: parsed.errors)
+                            gramCount: gramCount, skippedRecords: parsed.skipped, errors: parsed.errors, duplicateCount: duplicates)
     }
 
     // MARK: - 查询
 
     private static let enabledPacks = "SELECT id FROM packs WHERE enabled = 1"
+    /// 句不属于被隐藏的重复作品（用于不连接 works 的查询）。
+    static let notDuplicateLine = "work_id NOT IN (SELECT id FROM works WHERE duplicate_of IS NOT NULL)"
 
     /// 满足格律约束的语料片段（2-4 字取 n-gram，5 字以上取整句，1 字取字频）。
     public func candidates(for constraint: SlotConstraint, limit: Int = 60) throws -> [CorpusCandidate] {
@@ -327,24 +404,31 @@ public actor CorpusIndex {
         // 押韵等条件在 Swift 中二次过滤，SQL 先多取一些。
         let fetchLimit = constraint.rhyme == nil ? limit * 3 : limit * 40
         let rows: [CorpusCandidate]
+        let toneParameters: [SQLValue] = [.int(length), .integer(required.ping), .integer(required.ping),
+                                          .integer(required.ze), .integer(required.ze)]
+        // 次数都减去重复作品（`dup_*` 表）中的部分。
         if length == 1 {
             rows = try database.query("""
-                SELECT ch, SUM(freq) AS f FROM char_freq WHERE pack_id IN (\(CorpusIndex.enabledPacks))
-                GROUP BY ch ORDER BY f DESC LIMIT 6000
+                SELECT c.ch, SUM(c.freq) - COALESCE((SELECT d.freq FROM dup_chars d WHERE d.ch = c.ch), 0) AS f
+                FROM char_freq c WHERE c.pack_id IN (\(CorpusIndex.enabledPacks))
+                GROUP BY c.ch HAVING f > 0 ORDER BY f DESC LIMIT 6000
                 """) { CorpusCandidate(text: $0.text(0), frequency: $0.int(1)) }
-        } else {
-            let isGram = CorpusIndex.gramLengths.contains(length)
-            let table = isGram ? "grams" : "lines"
-            let textColumn = isGram ? "text" : "norm"
-            let frequency = isGram ? "SUM(freq)" : "COUNT(*)"
-            // 片段按节奏位出现次数优先，其次总次数；整句按出现次数。
-            let order = isGram ? "SUM(aligned) DESC, f DESC" : "f DESC"
+        } else if CorpusIndex.gramLengths.contains(length) {
+            // 片段按节奏位出现次数优先，其次总次数。
             rows = try database.query("""
-                SELECT \(textColumn), \(frequency) AS f FROM \(table)
+                SELECT g.text, SUM(g.freq) - COALESCE(d.freq, 0) AS f, SUM(g.aligned) - COALESCE(d.aligned, 0) AS a
+                FROM grams g LEFT JOIN dup_grams d ON d.len = g.len AND d.text = g.text
+                WHERE g.len = ? AND (g.\(pingColumn) & ?) = ? AND (g.\(zeColumn) & ?) = ? AND g.pack_id IN (\(CorpusIndex.enabledPacks))
+                GROUP BY g.text HAVING f > 0 ORDER BY a DESC, f DESC LIMIT ?
+                """, toneParameters + [.int(fetchLimit)]) { CorpusCandidate(text: $0.text(0), frequency: $0.int(1)) }
+        } else {
+            // 整句按出现次数；含缺字的句子不作候选。
+            rows = try database.query("""
+                SELECT norm, COUNT(*) AS f FROM lines
                 WHERE len = ? AND (\(pingColumn) & ?) = ? AND (\(zeColumn) & ?) = ? AND pack_id IN (\(CorpusIndex.enabledPacks))
-                GROUP BY \(textColumn) ORDER BY \(order) LIMIT ?
-                """, [.int(length), .integer(required.ping), .integer(required.ping), .integer(required.ze), .integer(required.ze),
-                      .int(fetchLimit)]) { CorpusCandidate(text: $0.text(0), frequency: $0.int(1)) }
+                    AND instr(norm, '\(CorpusIndex.missingCharacter)') = 0 AND \(CorpusIndex.notDuplicateLine)
+                GROUP BY norm ORDER BY f DESC LIMIT ?
+                """, toneParameters + [.int(fetchLimit)]) { CorpusCandidate(text: $0.text(0), frequency: $0.int(1)) }
         }
         return Array(rows.lazy.filter { constraint.accepts($0.text, dictionary: self.dictionary) }.prefix(limit))
     }
@@ -380,7 +464,8 @@ public actor CorpusIndex {
             parameter = .text(CorpusIndex.quoted(CorpusIndex.ftsTokens(norm)))
         }
         return try database.query("""
-            SELECT \(CorpusIndex.lineColumns) WHERE l.id IN (\(firstPerWork)) AND p.enabled = 1 ORDER BY l.id LIMIT ?
+            SELECT \(CorpusIndex.lineColumns) WHERE l.id IN (\(firstPerWork)) AND p.enabled = 1 AND w.duplicate_of IS NULL
+            ORDER BY l.id LIMIT ?
             """, [parameter, .int(limit)], mapLine)
     }
 
@@ -394,7 +479,7 @@ public actor CorpusIndex {
         let minimumLength = max(3, norm.count - 2)
         let recalled = try database.query("""
             SELECT \(CorpusIndex.lineColumns) JOIN line_fts f ON f.rowid = l.id
-            WHERE line_fts MATCH ? AND p.enabled = 1 AND l.norm <> ? AND l.len >= ?
+            WHERE line_fts MATCH ? AND p.enabled = 1 AND w.duplicate_of IS NULL AND l.norm <> ? AND l.len >= ?
             ORDER BY bm25(line_fts) LIMIT 300
             """, [.text(expression), .text(norm), .int(minimumLength)], mapLine)
         let scored = recalled.enumerated().map { index, line in
@@ -430,7 +515,7 @@ public actor CorpusIndex {
         guard let first = segments.first, segments.count > 1 || first.count >= 4 else { return nil }
         let starts = try database.query("""
             SELECT l.work_id, l.idx, w.title, w.author, w.dynasty FROM lines l JOIN works w ON w.id = l.work_id
-            JOIN packs p ON p.id = l.pack_id WHERE l.norm = ? AND p.enabled = 1 LIMIT 50
+            JOIN packs p ON p.id = l.pack_id WHERE l.norm = ? AND p.enabled = 1 AND w.duplicate_of IS NULL LIMIT 50
             """, [.text(first)]) { row in
             (row.int64(0), row.int(1), SourceInfo(author: row.optionalText(3), title: row.optionalText(2),
                                                   dynasty: row.optionalText(4), isVerified: true))
@@ -456,10 +541,11 @@ public actor CorpusIndex {
     /// 字频（已启用语料包合计），用于韵书浏览排序。
     public func characterFrequencies() throws -> [Character: Int] {
         let rows = try database.query("""
-            SELECT ch, SUM(freq) FROM char_freq WHERE pack_id IN (\(CorpusIndex.enabledPacks)) GROUP BY ch
+            SELECT c.ch, SUM(c.freq) - COALESCE((SELECT d.freq FROM dup_chars d WHERE d.ch = c.ch), 0)
+            FROM char_freq c WHERE c.pack_id IN (\(CorpusIndex.enabledPacks)) GROUP BY c.ch
             """) { ($0.text(0), $0.int(1)) }
         var result: [Character: Int] = [:]
-        for (text, count) in rows {
+        for (text, count) in rows where count > 0 {
             if let character = text.first, text.count == 1 { result[character] = count }
         }
         return result

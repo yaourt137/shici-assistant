@@ -35,10 +35,14 @@ public struct PackManifest: Codable, Sendable, Hashable {
     public var source: String?
     public var files: [String]
     public var fieldMapping: [String: String]?
+    /// 与其他语料包重复的作品保留哪一份：数值小的优先，缺省为 0；相同时先导入的优先。
+    public var priority: Int?
+
+    public static let priorityRange = 0...1_000
 
     public init(formatVersion: Int = supportedFormatVersion, kind: String = "corpus", id: String, name: String,
                 version: String? = nil, era: String? = nil, script: String? = nil, license: String? = nil,
-                source: String? = nil, files: [String], fieldMapping: [String: String]? = nil) {
+                source: String? = nil, files: [String], fieldMapping: [String: String]? = nil, priority: Int? = nil) {
         self.formatVersion = formatVersion
         self.kind = kind
         self.id = id
@@ -50,6 +54,7 @@ public struct PackManifest: Codable, Sendable, Hashable {
         self.source = source
         self.files = files
         self.fieldMapping = fieldMapping
+        self.priority = priority
     }
 
     public static func load(from directory: URL) throws -> PackManifest {
@@ -78,6 +83,9 @@ public struct PackManifest: Codable, Sendable, Hashable {
         guard !files.isEmpty else { throw PackError.invalidManifest("files 不能为空") }
         if let script, !["traditional", "simplified", "mixed"].contains(script) {
             throw PackError.invalidManifest("script 应为 traditional、simplified 或 mixed")
+        }
+        if let priority, !PackManifest.priorityRange.contains(priority) {
+            throw PackError.invalidManifest("priority 应在 \(PackManifest.priorityRange.lowerBound)–\(PackManifest.priorityRange.upperBound) 之间")
         }
         if let mapping = fieldMapping {
             let unknown = Set(mapping.keys).subtracting(PackManifest.standardFields)

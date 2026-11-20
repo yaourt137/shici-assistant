@@ -384,12 +384,26 @@ struct CorpusWorkView: View {
     @AppStorage("corpusShowTones") private var showTones = false
     @AppStorage("corpusShowRhymes") private var showRhymes = false
     @AppStorage("corpusRhymeBook") private var book: RhymeBook = .pingshui
+    @State private var versions: [CorpusWorkVersion] = []
+    @State private var viewingVersion: CorpusWork?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(work.title ?? "无题").font(.system(.title2, design: .serif))
             Text(SourceInfo(author: work.author, dynasty: work.dynasty).summary + " · " + work.packName)
                 .foregroundStyle(.secondary)
+            ForEach(versions) { version in
+                HStack(spacing: 6) {
+                    Text(version.isPrimary ? "保留版本" : "其他版本").font(.caption).foregroundStyle(.secondary)
+                    Text(version.packName + " · " + SourceInfo(author: version.author, title: version.title,
+                                                               dynasty: version.dynasty).summary)
+                        .font(.caption)
+                    if version.author != work.author, let author = version.author {
+                        Text("（又作\(author)）").font(.caption).foregroundStyle(.orange)
+                    }
+                    Button("查看") { Task { await open(version) } }.controlSize(.mini)
+                }
+            }
             if let preface = work.preface {
                 Text(preface).font(.callout).foregroundStyle(.secondary)
             }
@@ -424,6 +438,22 @@ struct CorpusWorkView: View {
         }
         .padding(20)
         .frame(width: 560, height: 520)
+        .task(id: work.id) {
+            do {
+                versions = try await model.service.corpus.versions(of: work.id)
+            } catch {
+                model.errorMessage = String(describing: error)
+            }
+        }
+        .sheet(item: $viewingVersion) { CorpusWorkView(work: $0) }
+    }
+
+    private func open(_ version: CorpusWorkVersion) async {
+        do {
+            viewingVersion = try await model.service.corpus.work(id: version.id)
+        } catch {
+            model.errorMessage = String(describing: error)
+        }
     }
 }
 

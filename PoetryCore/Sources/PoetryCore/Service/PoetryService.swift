@@ -88,7 +88,11 @@ public final class PoetryService {
     /// 下载的典籍（佩文韵府、艺文类聚）。
     public let classics: ClassicsIndex
     /// 内置的《声律启蒙》。
-    public let shengLv: ShengLvQiMeng
+    public let shengLv: RhymePrimer
+    /// 内置的《笠翁对韵》。
+    public let liweng: RhymePrimer
+    /// 对仗训练题库，随语料与佩文韵府的状态（`signature`）更新。
+    var drillPoolCache: (signature: String, pool: DrillPool)?
 
     public init(paths: AppPaths, dictionary: CharDictionary = .shared, tunes: CiTuneLibrary = .bundled) throws {
         try paths.createDirectories()
@@ -100,7 +104,8 @@ public final class PoetryService {
         // 语料索引按内置读音建立，不随补充读音变化。
         self.corpus = try CorpusIndex(url: paths.corpus, dictionary: dictionary)
         self.classics = try ClassicsIndex(url: paths.classicsIndex, converter: dictionary.converter)
-        self.shengLv = try ShengLvQiMeng.loadBundled(groups: dictionary.groups)
+        self.shengLv = try RhymePrimer.loadBundled(.shengLvQiMeng, groups: dictionary.groups)
+        self.liweng = try RhymePrimer.loadBundled(.liwengDuiyun, groups: dictionary.groups)
         try reloadCustomReadings()
     }
 
@@ -296,10 +301,23 @@ public final class PoetryService {
         }
     }
 
-    /// 对仗：《声律启蒙》在前，佩文韵府「对语」在后（未下载时只有前者）。
+    /// 内置的对韵蒙书，按 `PrimerWork.allCases` 顺序。
+    public var primers: [RhymePrimer] { PrimerWork.allCases.map(primer) }
+
+    public func primer(_ work: PrimerWork) -> RhymePrimer {
+        switch work {
+        case .shengLvQiMeng: shengLv
+        case .liwengDuiyun: liweng
+        }
+    }
+
+    /// 对仗：《声律启蒙》《笠翁对韵》在前，佩文韵府「对语」在后（未下载时只有前者）。
     nonisolated(nonsending) public func couplets(matching text: String) async throws -> [CoupletSuggestion] {
-        let fromPrimer = shengLv.couplets(matching: text, converter: dictionary.converter).map { match in
-            CoupletSuggestion(counterpart: match.counterpart, source: .shengLv(sectionIndex: match.couplet.sectionIndex))
+        let fromPrimer = primers.flatMap { primer in
+            primer.couplets(matching: text, converter: dictionary.converter).map { match in
+                CoupletSuggestion(counterpart: match.counterpart,
+                                  source: .primer(primer.work, sectionIndex: match.couplet.sectionIndex))
+            }
         }
         let norm = dictionary.converter.simplified(TextSegmenter.hanOnly(text))
         let fromYunfu = try await classics.duiyu(matching: text).map { entry in
@@ -363,8 +381,8 @@ public enum YunzaoRanking {
 /// 对仗建议。
 public struct CoupletSuggestion: Sendable, Hashable {
     public enum Source: Sendable, Hashable {
-        /// 《声律启蒙》第几节（0...29）。
-        case shengLv(sectionIndex: Int)
+        /// 对韵蒙书第几节（0...29）。
+        case primer(PrimerWork, sectionIndex: Int)
         /// 佩文韵府对语，记韵字与所在韵目。
         case yunfu(head: String, groupID: Int)
     }

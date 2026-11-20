@@ -13,13 +13,13 @@ struct RhymeBrowserView: View {
 
     enum Mode: Hashable {
         case characters
-        case primer
+        case primer(PrimerWork)
     }
 
-    /// 当前韵部对应的《声律启蒙》各节：平水韵平声一韵一节；词林正韵一部可含数节；中华通韵无。
-    private var primerSections: [ShengLvQiMeng.Section] {
+    /// 当前韵部对应的对韵蒙书各节：平水韵平声一韵一节；词林正韵一部可含数节；中华通韵无。
+    private func primerSections(_ work: PrimerWork) -> [RhymePrimer.Section] {
         guard let key else { return [] }
-        let primer = model.service.shengLv
+        let primer = model.service.primer(work)
         switch book {
         case .pingshui:
             return primer.section(forGroup: key.id).map { [$0] } ?? []
@@ -33,10 +33,18 @@ struct RhymeBrowserView: View {
         }
     }
 
-    /// 在《声律启蒙》本韵中用作韵脚的字（简体）。
+    /// 有对应各节的对韵蒙书。
+    private var availablePrimers: [PrimerWork] {
+        PrimerWork.allCases.filter { !primerSections($0).isEmpty }
+    }
+
+    /// 在《声律启蒙》或《笠翁对韵》本韵中用作韵脚的字（简体）。
     private var primerRhymes: Set<Character> {
-        primerSections.reduce(into: Set<Character>()) {
-            $0.formUnion(model.service.shengLv.rhymeCharacters(of: $1, converter: model.dictionary.converter))
+        PrimerWork.allCases.reduce(into: Set<Character>()) { result, work in
+            let primer = model.service.primer(work)
+            for section in primerSections(work) {
+                result.formUnion(primer.rhymeCharacters(of: section, converter: model.dictionary.converter))
+            }
         }
     }
 
@@ -60,10 +68,10 @@ struct RhymeBrowserView: View {
                         Text(model.dictionary.displayName(of: key)).font(.title2)
                         Text("\(characters.count) 字").foregroundStyle(.secondary)
                         Spacer()
-                        if !primerSections.isEmpty {
+                        if !availablePrimers.isEmpty {
                             Picker("", selection: $mode) {
                                 Text("字表").tag(Mode.characters)
-                                Text("声律启蒙").tag(Mode.primer)
+                                ForEach(availablePrimers) { Text($0.name).tag(Mode.primer($0)) }
                             }
                             .pickerStyle(.segmented)
                             .labelsHidden()
@@ -80,12 +88,13 @@ struct RhymeBrowserView: View {
                             .fixedSize()
                         }
                     }
-                    if mode == .primer, !primerSections.isEmpty {
-                        if book == .cilin, primerSections.count > 1 {
+                    if case .primer(let work) = mode, !primerSections(work).isEmpty {
+                        if book == .cilin, primerSections(work).count > 1 {
                             Text("词林正韵一部含平水韵数韵，依次列出；「佳、灰、元」等韵分属两部，在两部下都会列出。")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
-                        ShengLvSectionView(sections: primerSections, highlighted: selectedCharacter)
+                        PrimerSectionView(primer: model.service.primer(work), sections: primerSections(work),
+                                          highlighted: selectedCharacter)
                     } else {
                         characterGrid
                     }
@@ -131,7 +140,7 @@ struct RhymeBrowserView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         Text(rhymes.isEmpty ? "点选一个字，查看佩文韵府中的韵藻与对语。"
-             : "点选一个字，查看佩文韵府中的韵藻与对语；带圆点的字在《声律启蒙》本韵中用作韵脚。")
+             : "点选一个字，查看佩文韵府中的韵藻与对语；带圆点的字在《声律启蒙》或《笠翁对韵》本韵中用作韵脚。")
             .font(.caption).foregroundStyle(.secondary)
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 36), spacing: 6)], spacing: 6) {

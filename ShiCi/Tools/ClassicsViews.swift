@@ -2,7 +2,7 @@ import AppKit
 import PoetryCore
 import SwiftUI
 
-/// 语料包页面中的典籍：声律启蒙（内置）与可下载的佩文韵府、艺文类聚。
+/// 语料包页面中的典籍：声律启蒙、笠翁对韵（内置）与可下载的佩文韵府、艺文类聚。
 struct ClassicsPackSection: View {
     @Environment(AppModel.self) private var model
     @State private var pendingRemoval: ClassicWork?
@@ -10,11 +10,13 @@ struct ClassicsPackSection: View {
     var body: some View {
         GroupBox("典籍") {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("声律启蒙").frame(width: 72, alignment: .leading)
-                    Text("内置。按平水韵三十个平声韵分节，在「韵书」中查看；编辑时可查对仗。")
-                        .foregroundStyle(.secondary)
-                    Spacer()
+                ForEach(PrimerWork.allCases) { work in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(work.name).frame(width: 72, alignment: .leading)
+                        Text("内置。按平水韵三十个平声韵分节，在「韵书」中查看；编辑时可查对仗，也用作对仗训练的题库。")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
                 }
                 ForEach(ClassicWork.allCases) { work in
                     HStack(alignment: .firstTextBaseline) {
@@ -268,10 +270,11 @@ struct YunfuEntrySheet: View {
     }
 }
 
-/// 《声律启蒙》一节：韵脚高亮，不属本韵的韵脚标出实际韵目，所选字加底色。
-struct ShengLvSectionView: View {
+/// 对韵蒙书（《声律启蒙》《笠翁对韵》）的若干节：韵脚高亮，不属本韵的韵脚标出实际韵目，所选字加底色。
+struct PrimerSectionView: View {
     @Environment(AppModel.self) private var model
-    let sections: [ShengLvQiMeng.Section]
+    let primer: RhymePrimer
+    let sections: [RhymePrimer.Section]
     let highlighted: Character?
 
     @AppStorage(ClassicScript.storageKey) private var showSimplified = false
@@ -280,7 +283,7 @@ struct ShengLvSectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Text("车万育《声律启蒙》，文本取自维基文库。").font(.caption).foregroundStyle(.secondary)
+                    Text("\(primer.work.author)《\(primer.work.name)》，文本取自维基文库。").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Toggle("简体", isOn: $showSimplified).toggleStyle(.checkbox)
                 }
@@ -313,7 +316,7 @@ struct ShengLvSectionView: View {
         model.dictionary.pingshuiGroupIDs(of: character).contains(groupID)
     }
 
-    private func attributed(_ line: ShengLvQiMeng.Line, groupID: Int) -> AttributedString {
+    private func attributed(_ line: RhymePrimer.Line, groupID: Int) -> AttributedString {
         let converter = model.dictionary.converter
         let target = highlighted.map(converter.simplified)
         let rhymes = Set(line.rhymeOffsets)
@@ -333,8 +336,8 @@ struct ShengLvSectionView: View {
         return result
     }
 
-    private func mismatchNotes(_ section: ShengLvQiMeng.Section) -> [String] {
-        model.service.shengLv.rhymeMismatches(dictionary: model.dictionary)
+    private func mismatchNotes(_ section: RhymePrimer.Section) -> [String] {
+        primer.rhymeMismatches(dictionary: model.dictionary)
             .filter { $0.sectionIndex == section.index }
             .map { mismatch in
                 let groups = mismatch.actualGroupIDs.map { model.dictionary.groups[$0].displayName }

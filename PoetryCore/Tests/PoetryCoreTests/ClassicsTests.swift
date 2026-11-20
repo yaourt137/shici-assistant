@@ -10,10 +10,10 @@ private func groupID(_ section: PingshuiSection, _ number: Int) throws -> Int {
 
 @Suite("声律启蒙")
 struct ShengLvQiMengTests {
-    let primer: ShengLvQiMeng
+    let primer: RhymePrimer
 
     init() throws {
-        primer = try ShengLvQiMeng.loadBundled(groups: dictionary.groups)
+        primer = try RhymePrimer.loadBundled(.shengLvQiMeng, groups: dictionary.groups)
     }
 
     @Test("三十节对应平水韵三十个平声韵，每节三段、每段四行")
@@ -33,9 +33,9 @@ struct ShengLvQiMengTests {
         #expect(first[0].rhymeCharacters == ["風", "空", "蟲"])
         #expect(first[1].rhymeCharacters == ["弓", "東", "宮"])
         #expect(first[3].rhymeCharacters == ["翁"])
-        let line = ShengLvQiMeng.parseLine("甲，乙。丙")
+        let line = RhymePrimer.parseLine("甲，乙。丙")
         #expect(line.rhymeOffsets == [2], "没有句号的尾巴不取韵脚")
-        #expect(ShengLvQiMeng.parseLine("").rhymeOffsets.isEmpty)
+        #expect(RhymePrimer.parseLine("").rhymeOffsets.isEmpty)
     }
 
     @Test("异文取主文，另存异文")
@@ -67,8 +67,13 @@ struct ShengLvQiMengTests {
                          "兩岸曉煙楊柳綠|一園春雨杏花紅", "兩鬢風霜途次早行之客|一蓑煙雨溪邊晚釣之翁"] {
             #expect(pairs.contains(expected), "\(expected)")
         }
-        let mixed = ShengLvQiMeng.couplets(in: "甲對乙乙，丙丁，戊。", sectionIndex: 3)
+        let mixed = RhymePrimer.couplets(in: "甲對乙乙，丙丁，戊。", sectionIndex: 3)
         #expect(mixed.isEmpty, "两边不等长不成对，落单的分句不成对")
+        let long = RhymePrimer.couplets(in: "十月塞邊，颯颯寒霜驚戍旅；三冬江上，漫漫朔雪冷漁翁。", sectionIndex: 0)
+        #expect(long.map { "\($0.left)|\($0.right)" } == ["十月塞邊，颯颯寒霜驚戍旅|三冬江上，漫漫朔雪冷漁翁"], "长对整体成对")
+        #expect(RhymePrimer.couplets(in: "甲乙，丙丁戊；己庚，辛壬。", sectionIndex: 0).map(\.left) == ["己庚"],
+                "两半分句字数不同则不作长对，只取等长相邻分句")
+        #expect(RhymePrimer.couplets(in: "甲乙；丙丁。", sectionIndex: 0).count == 1, "只有一个分句的两半按相邻分句成对，不重复")
     }
 
     @Test("按词查对：繁简不拘、双向")
@@ -77,6 +82,7 @@ struct ShengLvQiMengTests {
         #expect(primer.couplets(matching: "云", converter: converter).map(\.counterpart).contains("雨"))
         #expect(primer.couplets(matching: "雨", converter: converter).map(\.counterpart).contains("雲"))
         #expect(primer.couplets(matching: "来鸿", converter: converter).map(\.counterpart) == ["去燕"])
+        #expect(primer.couplets(matching: "两鬓风霜途次早行之客", converter: converter).map(\.counterpart) == ["一蓑煙雨溪邊晚釣之翁"])
         #expect(primer.couplets(matching: "", converter: converter).isEmpty)
         #expect(primer.couplets(matching: "，。", converter: converter).isEmpty)
         #expect(primer.couplets(matching: "不存在的词", converter: converter).isEmpty)
@@ -86,17 +92,80 @@ struct ShengLvQiMengTests {
     @Test("节名无法对应、卷名缺失或没有任何一节时报错")
     func errors() {
         let groups = dictionary.groups
-        #expect(throws: ShengLvQiMengError.unknownSection("一、冬")) {
-            try ShengLvQiMeng(wikitext: "==卷上==\n===一、冬===\n雲對雨。\n", groups: groups)
+        #expect(throws: RhymePrimerError.unknownSection("一、冬")) {
+            try RhymePrimer.shengLvQiMeng(wikitext: "==卷上==\n===一、冬===\n雲對雨。\n", groups: groups)
         }
-        #expect(throws: ShengLvQiMengError.unknownSection("一、東")) {
-            try ShengLvQiMeng(wikitext: "===一、東===\n雲對雨。\n", groups: groups)
+        #expect(throws: RhymePrimerError.unknownSection("一、東")) {
+            try RhymePrimer.shengLvQiMeng(wikitext: "===一、東===\n雲對雨。\n", groups: groups)
         }
-        #expect(throws: ShengLvQiMengError.unknownSection("東")) {
-            try ShengLvQiMeng(wikitext: "==卷上==\n===東===\n", groups: groups)
+        #expect(throws: RhymePrimerError.unknownSection("東")) {
+            try RhymePrimer.shengLvQiMeng(wikitext: "==卷上==\n===東===\n", groups: groups)
         }
-        #expect(throws: ShengLvQiMengError.noSections) { try ShengLvQiMeng(wikitext: "{{header}}\n", groups: groups) }
-        #expect(throws: ShengLvQiMengError.noSections) { try ShengLvQiMeng(wikitext: "==卷上==\n===一、東===\n", groups: groups) }
+        #expect(throws: RhymePrimerError.noSections) { try RhymePrimer.shengLvQiMeng(wikitext: "{{header}}\n", groups: groups) }
+        #expect(throws: RhymePrimerError.noSections) { try RhymePrimer.shengLvQiMeng(wikitext: "==卷上==\n===一、東===\n", groups: groups) }
+    }
+
+    @Test("问号、叹号也断句")
+    func questionMarks() {
+        let line = RhymePrimer.parseLine("色艷北堂，草號忘憂憂甚事？香濃南國，花名含笑笑何人？")
+        #expect(line.rhymeCharacters == ["人"], "以问号断开的前半句末字不押韵")
+        #expect(RhymePrimer.parseLine("甲乙！丙丁。").rhymeCharacters == ["丁"])
+        #expect(RhymePrimer.parseLine("甲乙。丙丁！").rhymeCharacters == ["乙", "丁"])
+        let pairs = RhymePrimer.couplets(in: line.text, sectionIndex: 0).map { "\($0.left)|\($0.right)" }
+        #expect(pairs == ["色艷北堂，草號忘憂憂甚事|香濃南國，花名含笑笑何人"], "以问号隔开的长对整体成对")
+        #expect(RhymePrimer.couplets(in: "甲對乙，丙對丁。戊對己，庚對辛。", sectionIndex: 0).count == 4, "含「對」的句子不作长对")
+    }
+}
+
+@Suite("笠翁对韵")
+struct LiwengDuiyunTests {
+    let primer: RhymePrimer
+
+    init() throws {
+        primer = try RhymePrimer.loadBundled(.liwengDuiyun, groups: dictionary.groups)
+    }
+
+    @Test("三十节依次对应平水韵三十个平声韵，每节二至四段、每段七行")
+    func structure() {
+        #expect(primer.work == .liwengDuiyun)
+        #expect(primer.sections.count == 30)
+        #expect(primer.sections.map(\.groupID) == dictionary.groups.filter { $0.tone == .ping }.map(\.id))
+        #expect(primer.sections[0].title == "一、東")
+        #expect(primer.sections[16].title == "二、蕭")
+        #expect(primer.sections.allSatisfy { (2...4).contains($0.stanzas.count) && $0.stanzas.allSatisfy { $0.count == 7 } })
+        #expect(primer.sections[2].stanzas.count == 2, "江韵只有两段")
+        #expect(primer.sections[0].stanzas[0].first?.text == "天對地，雨對風。", "去掉行首的「:」与全角空格")
+        #expect(primer.sections[16].stanzas[0].first?.text == "琴對管，斧對瓢。", "<poem> 包裹的页面同样解析")
+    }
+
+    @Test("对仗与韵脚")
+    func couplets() {
+        let pairs = Set(primer.couplets.filter { $0.sectionIndex == 0 }.map { "\($0.left)|\($0.right)" })
+        for expected in ["天|地", "雨|風", "大陸|長空", "雷隱隱|霧濛濛", "風高秋月白|雨霽晚霞紅",
+                         "十月塞邊，颯颯寒霜驚戍旅|三冬江上，漫漫朔雪冷漁翁"] {
+            #expect(pairs.contains(expected), "\(expected)")
+        }
+        #expect(primer.sections[0].stanzas[0][0].rhymeCharacters == ["風"])
+        let rhymes = primer.sections.flatMap { section in section.stanzas.flatMap { $0 }.flatMap(\.rhymeCharacters).map { (section, $0) } }
+        let matched = rhymes.filter { dictionary.pingshuiGroupIDs(of: $0.1).contains($0.0.groupID) }
+        #expect(Double(matched.count) / Double(rhymes.count) > 0.9)
+    }
+
+    @Test("节名与韵目代表字不符、缺节名或没有正文时报错")
+    func errors() {
+        let groups = dictionary.groups
+        #expect(throws: RhymePrimerError.unknownSection("冬")) {
+            try RhymePrimer.liwengDuiyun(wikitext: "{{header\n| section  = 冬\n}}\n:天對地。\n", groups: groups)
+        }
+        #expect(throws: RhymePrimerError.unknownSection("東冬")) {
+            try RhymePrimer.liwengDuiyun(wikitext: "{{header\n| section  = 東冬\n}}\n:天對地。\n", groups: groups)
+        }
+        #expect(throws: RhymePrimerError.noSections) {
+            try RhymePrimer.liwengDuiyun(wikitext: "{{header\n| section  = \n}}\n:天對地。\n", groups: groups)
+        }
+        #expect(throws: RhymePrimerError.noSections) { try RhymePrimer.liwengDuiyun(wikitext: "", groups: groups) }
+        let one = try? RhymePrimer.liwengDuiyun(wikitext: "{{header\n| section  = 東\n}}\n:　　天對地。\n:　　\n:山對海。\n", groups: groups)
+        #expect(one?.sections.first?.stanzas.count == 2, "只有「:」的行分段")
     }
 }
 
@@ -460,11 +529,14 @@ struct ClassicsServiceTests {
         await #expect(throws: (any Error).self) { try await service.reimportClassic(.peiwenYunfu) }
     }
 
-    @Test("对仗：声律启蒙在前，佩文对语在后，去重")
+    @Test("对仗：对韵蒙书在前，佩文对语在后，去重")
     func couplets() async throws {
         let directory = try TemporaryDirectory()
         let service = try makeService(directory)
-        #expect(try await service.couplets(matching: "云").first?.counterpart == "雨")
+        let cloud = try await service.couplets(matching: "云")
+        #expect(cloud.first?.counterpart == "雨")
+        #expect(cloud.first?.source == .primer(.shengLvQiMeng, sectionIndex: 0))
+        #expect(try await service.couplets(matching: "大陆").map(\.source) == [.primer(.liwengDuiyun, sectionIndex: 0)], "笠翁对韵")
         try placeTexts(service, directory)
         try await service.reimportClassic(.peiwenYunfu)
         let suggestions = try await service.couplets(matching: "缊瑟")

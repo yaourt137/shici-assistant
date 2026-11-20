@@ -233,6 +233,12 @@ public actor ClassicsIndex {
             """, [.text(norm), .text(norm), .int(limit)], mapYunfu)
     }
 
+    /// 全部对语（用作对仗训练题库），按原书顺序。
+    public func allDuiyu() throws -> [YunfuEntry] {
+        try database.query("SELECT \(ClassicsIndex.yunfuColumns) WHERE kind = ? AND counterpart IS NOT NULL ORDER BY id",
+                           [.int(YunfuEntryKind.duiyu.rawValue)], mapYunfu)
+    }
+
     // MARK: - 艺文类聚
 
     public func leijuTopics() throws -> [LeijuTopic] {

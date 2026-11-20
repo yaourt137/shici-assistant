@@ -2,7 +2,7 @@ import AppKit
 import PoetryCore
 import SwiftUI
 
-/// 编辑器的「典籍」页：所选词在《声律启蒙》与佩文韵府对语中的对仗，以及合乎此位置格律的佩文韵藻。
+/// 编辑器的「典籍」页：所选词在《声律启蒙》《笠翁对韵》与佩文韵府对语中的对仗，以及合乎此位置格律的佩文韵藻。
 struct ClassicsPanel: View {
     @Environment(AppModel.self) private var model
     let constraint: SlotConstraint?
@@ -26,7 +26,7 @@ struct ClassicsPanel: View {
         List {
             Section("对仗：与「\(currentText)」相对") {
                 if couplets.isEmpty {
-                    Text(hasYunfu ? "声律启蒙与佩文对语中未见" : "声律启蒙中未见（下载佩文韵府后另查其对语）").foregroundStyle(.secondary)
+                    Text(hasYunfu ? "声律启蒙、笠翁对韵与佩文对语中未见" : "声律启蒙、笠翁对韵中未见（下载佩文韵府后另查其对语）").foregroundStyle(.secondary)
                 }
                 ForEach(Array(couplets.enumerated()), id: \.offset) { _, suggestion in
                     HStack(alignment: .firstTextBaseline) {
@@ -78,9 +78,9 @@ struct ClassicsPanel: View {
 
     private func describe(_ source: CoupletSuggestion.Source) -> String {
         switch source {
-        case .shengLv(let index):
-            let sections = model.service.shengLv.sections
-            return "声律启蒙 · " + (sections.indices.contains(index) ? sections[index].title : "")
+        case .primer(let work, let index):
+            let sections = model.service.primer(work).sections
+            return "\(work.name) · " + (sections.indices.contains(index) ? sections[index].title : "")
         case .yunfu(let head, let groupID):
             let groups = model.dictionary.groups
             return "佩文对语 · \(head)" + (groups.indices.contains(groupID) ? "（\(groups[groupID].displayName)）" : "")

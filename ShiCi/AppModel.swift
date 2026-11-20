@@ -11,6 +11,7 @@ enum SidebarItem: Hashable {
     case smart(UUID)
     case rhymeBook
     case leiju
+    case drill
     case packs
 }
 
@@ -260,6 +261,7 @@ final class AppModel {
         }
         notice = "已导入「\(report.name)」：\(report.workCount) 篇、\(report.lineCount) 句"
             + (report.skippedRecords > 0 ? "，跳过 \(report.skippedRecords) 条无效记录" : "")
+            + (report.duplicateCount > 0 ? "；其中 \(report.duplicateCount) 篇与已有语料重复，已隐藏" : "")
     }
 
     /// 下载 chinese-poetry 唐诗与宋词并导入。
@@ -281,7 +283,32 @@ final class AppModel {
         await refreshPacks()
     }
 
+    /// 依次下载 Werneror/Poetry 的若干时代分包并导入；出错即停，已完成的保留。
+    func downloadWerneror(_ sources: [WernerorSource]) async {
+        do {
+            for source in sources {
+                importStatus = ImportStatus(title: source.name, phase: "下载", fraction: nil)
+                let directory = try await WernerorDownloader.download(source, into: service.paths.packs) { message in
+                    Task { @MainActor [weak self] in
+                        self?.importStatus = ImportStatus(title: source.name, phase: message, fraction: nil)
+                    }
+                }
+                try await importPack(at: directory)
+                await refreshPacks()
+            }
+        } catch {
+            importStatus = nil
+            errorMessage = String(describing: error)
+        }
+        await refreshPacks()
+    }
+
+    /// 启用、停用或删除后要重新取舍重复作品，语料多时需数秒，期间显示进度。
+    private func packTitle(_ id: String) -> String { packs.first { $0.id == id }?.name ?? id }
+
     func setPackEnabled(_ enabled: Bool, id: String) async {
+        importStatus = ImportStatus(title: packTitle(id), phase: enabled ? "启用并取舍重复作品" : "停用并取舍重复作品", fraction: nil)
+        defer { importStatus = nil }
         do {
             try await service.corpus.setEnabled(enabled, packID: id)
         } catch {
@@ -291,6 +318,8 @@ final class AppModel {
     }
 
     func removePack(_ id: String) async {
+        importStatus = ImportStatus(title: packTitle(id), phase: "删除并取舍重复作品", fraction: nil)
+        defer { importStatus = nil }
         do {
             try await service.removePack(id: id)
         } catch {

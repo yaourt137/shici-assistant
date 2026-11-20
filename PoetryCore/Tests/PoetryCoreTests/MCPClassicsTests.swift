@@ -36,6 +36,32 @@ extension MCPTests {
         #expect(byText["result"]?["structuredContent"]?["entries"]?.arrayValue?.first?["genre"]?.stringValue == "詩")
     }
 
+    @Test("对仗评分工具")
+    func scoreCoupletTool() async throws {
+        let directory = try TemporaryDirectory()
+        let (server, _) = try makeServer(directory)
+        let response = try await tool(server, "score_couplet", ["text": "云", "answer": "雨"])
+        let content = response["result"]?["structuredContent"]
+        #expect(content?["level"]?.stringValue == "工")
+        #expect(content?["mode"]?.stringValue == "对词")
+        #expect(content?["reasons"]?.arrayValue?.first?.stringValue == "见于声律启蒙·一、東")
+        #expect(content?["positions"]?.arrayValue?.first?["tone"]?.stringValue == "相对")
+        #expect(content?["references"]?.arrayValue?.first?["source"]?.stringValue == "声律启蒙·一、東")
+        #expect(response["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue?.hasPrefix("工：") == true)
+
+        let line = try await tool(server, "score_couplet", ["text": "风急天高猿啸哀", "answer": "渚清沙白鸟飞回"])
+        #expect(line["result"]?["structuredContent"]?["meter"]?.stringValue == "律对")
+
+        func message(_ arguments: JSONValue) async throws -> String {
+            let response = try await tool(server, "score_couplet", arguments)
+            #expect(response["result"]?["isError"]?.boolValue == true)
+            return response["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
+        }
+        #expect(try await message(["text": "云"]).contains("缺少参数 answer"))
+        #expect(try await message(["text": "，", "answer": "雨"]).contains("出题中没有汉字"))
+        #expect(try await message(["text": "云", "answer": "。"]).contains("对句中没有汉字"))
+    }
+
     @Test("典籍工具的参数校验")
     func classicsToolErrors() async throws {
         let directory = try TemporaryDirectory()

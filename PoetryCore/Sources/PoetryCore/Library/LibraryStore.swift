@@ -14,7 +14,7 @@ public enum LibraryError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// 用户库：作品、收藏、标签、智能收藏夹与设置。
+/// 用户库：作品、收藏、标签、智能收藏夹、对仗练习记录与设置。
 public final class LibraryStore {
     private let database: SQLiteDatabase
 
@@ -65,6 +65,17 @@ public final class LibraryStore {
             created_at REAL NOT NULL,
             PRIMARY KEY (character, group_id)
         );
+        CREATE TABLE IF NOT EXISTS drill_attempts (
+            id TEXT PRIMARY KEY,
+            mode TEXT NOT NULL,
+            question_key TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            level INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS drill_attempts_key ON drill_attempts(question_key, created_at);
         """)
         // 读音指定为后加的列，旧库需补上。
         let poemColumns = try database.query("PRAGMA table_info(poems)") { $0.text(1) }
@@ -272,6 +283,51 @@ public final class LibraryStore {
     public func deleteCustomReading(_ reading: CustomReading) throws {
         try database.run("DELETE FROM custom_readings WHERE character = ? AND group_id = ?",
                          [.text(String(reading.character)), .int(reading.groupID)])
+    }
+
+    // MARK: - 对仗练习记录
+
+    private static let drillColumns = "id, mode, question_key, prompt, answer, level, source, created_at FROM drill_attempts"
+
+    private func mapDrillAttempt(_ row: SQLRow) throws -> DrillAttempt {
+        guard let id = UUID(uuidString: row.text(0)), let mode = DrillMode(rawValue: row.text(1)),
+              let level = CoupletScore.Level(rawValue: row.int(5)) else {
+            throw LibraryError.notFound("练习记录格式错误：\(row.text(0))")
+        }
+        return DrillAttempt(id: id, mode: mode, questionKey: row.text(2), prompt: row.text(3), answer: row.text(4),
+                            level: level, source: row.text(6), createdAt: Date(timeIntervalSince1970: row.double(7)))
+    }
+
+    public func save(_ attempt: DrillAttempt) throws {
+        try database.run("""
+            INSERT INTO drill_attempts (id, mode, question_key, prompt, answer, level, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, [.text(attempt.id.uuidString), .text(attempt.mode.rawValue), .text(attempt.questionKey), .text(attempt.prompt),
+                  .text(attempt.answer), .int(attempt.level.rawValue), .text(attempt.source),
+                  .real(attempt.createdAt.timeIntervalSince1970)])
+    }
+
+    /// 练习记录，新的在前；`mode` 为 nil 时不分模式。
+    public func drillAttempts(mode: DrillMode? = nil) throws -> [DrillAttempt] {
+        if let mode {
+            return try database.query("SELECT \(LibraryStore.drillColumns) WHERE mode = ? ORDER BY created_at DESC",
+                                      [.text(mode.rawValue)], mapDrillAttempt)
+        }
+        return try database.query("SELECT \(LibraryStore.drillColumns) ORDER BY created_at DESC", [], mapDrillAttempt)
+    }
+
+    /// 某题的各次作答，新的在前。
+    public func drillAttempts(questionKey: String) throws -> [DrillAttempt] {
+        try database.query("SELECT \(LibraryStore.drillColumns) WHERE question_key = ? ORDER BY created_at DESC",
+                           [.text(questionKey)], mapDrillAttempt)
+    }
+
+    /// 答过的题目标识。
+    public func answeredDrillKeys() throws -> Set<String> {
+        Set(try database.query("SELECT DISTINCT question_key FROM drill_attempts") { $0.text(0) })
+    }
+
+    public func deleteDrillAttempt(id: UUID) throws {
+        try database.run("DELETE FROM drill_attempts WHERE id = ?", [.text(id.uuidString)])
     }
 
     // MARK: - 设置

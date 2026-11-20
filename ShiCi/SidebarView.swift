@@ -76,6 +76,10 @@ struct SidebarView: View {
                     .accessibilityIdentifier("sidebarRhymeBook")
                 Label("艺文类聚", systemImage: "books.vertical.circle")
                     .tag(SidebarItem.leiju)
+                Label("对仗训练", systemImage: "rectangle.split.2x1")
+                    .badge(Text("Beta"))
+                    .tag(SidebarItem.drill)
+                    .accessibilityIdentifier("sidebarDrill")
                 Label("语料包", systemImage: "books.vertical")
                     .tag(SidebarItem.packs)
             }

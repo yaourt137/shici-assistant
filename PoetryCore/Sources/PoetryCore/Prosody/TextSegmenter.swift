@@ -18,11 +18,12 @@ public enum TextSegmenter {
         return scalar.properties.isIdeographic
     }
 
-    public static func segments(of text: String) -> [[TextChar]] {
+    /// - Parameter placeholders: 视同汉字、占一个字位的缺字符号（如语料中的「□」），不作分隔。
+    public static func segments(of text: String, placeholders: Set<Character> = []) -> [[TextChar]] {
         var result: [[TextChar]] = []
         var current: [TextChar] = []
         for (offset, character) in text.enumerated() {
-            if isHan(character) {
+            if isHan(character) || placeholders.contains(character) {
                 current.append(TextChar(character: character, offset: offset))
             } else if !current.isEmpty {
                 result.append(current)

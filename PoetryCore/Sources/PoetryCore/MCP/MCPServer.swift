@@ -72,7 +72,7 @@ public final class MCPServer {
                 "protocolVersion": .string(version),
                 "capabilities": ["tools": [:]],
                 "serverInfo": ["name": .string(MCPServer.serverName), "version": .string(MCPServer.serverVersion)],
-                "instructions": "诗词助手：格律校验、字音查询、按平仄检索替换候选、收藏与标签，以及声律启蒙、佩文韵府、艺文类聚的查询。agent 写入的收藏会标记来源，默认进入收件箱等待用户确认。",
+                "instructions": "诗词助手：格律校验、字音查询、按平仄检索替换候选、收藏与标签，以及声律启蒙、笠翁对韵、佩文韵府、艺文类聚的查询与对仗评分。agent 写入的收藏会标记来源，默认进入收件箱等待用户确认。",
             ]
         case "notifications/initialized", "notifications/cancelled":
             return .null
@@ -299,9 +299,12 @@ public final class MCPServer {
             let text = try string(arguments, "text") ?? ""
             let suggestions = Array(try await service.couplets(matching: text).prefix(try limit(arguments, default: 30)))
             let items: [JSONValue] = suggestions.map { ["counterpart": .string($0.counterpart), "source": .string(describe($0.source))] }
-            let summary = suggestions.isEmpty ? "声律启蒙与佩文韵府对语中没有「\(text)」的对"
+            let summary = suggestions.isEmpty ? "声律启蒙、笠翁对韵与佩文韵府对语中都没有「\(text)」的对"
                 : suggestions.map { "\($0.counterpart)（\(describe($0.source))）" }.joined(separator: "、")
             return (summary, ["text": .string(text), "couplets": .array(items)])
+
+        case "score_couplet":
+            return try await scoreCouplet(arguments)
 
         case "search_leiju":
             try await requireClassic(.yiwenLeiju)
@@ -345,6 +348,48 @@ public final class MCPServer {
 
     // MARK: - 典籍
 
+    private func scoreCouplet(_ arguments: JSONValue) async throws -> (String, JSONValue) {
+        let text = try string(arguments, "text") ?? ""
+        let answer = try string(arguments, "answer") ?? ""
+        let evaluation: CoupletEvaluation
+        do {
+            evaluation = try await service.evaluateCouplet(prompt: text, answer: answer)
+        } catch let error as CoupletScoreError {
+            throw RPCError.invalidParams(error.description)
+        }
+        let score = evaluation.score
+        var references: [JSONValue] = []
+        for reference in evaluation.references.prefix(20) {
+            references.append(["counterpart": .string(reference.counterpart), "source": .string(try await service.describe(reference.source))])
+        }
+        let positions: [JSONValue] = score.positions.map { position in
+            let tone = switch position.tone {
+            case .opposed: "相对"
+            case .same: "相同"
+            case .unknown: "未判"
+            }
+            return ["text": .string(String(position.promptCharacter)), "answer": .string(String(position.answerCharacter)),
+                    "tone": .string(tone), "key_position": .bool(position.isKeyPosition),
+                    "affinity": .string(position.affinity.displayName), "count": .number(Double(position.pairCount)),
+                    "category": position.category.map(JSONValue.string) ?? .null]
+        }
+        var summary = "\(score.level.displayName)：" + score.reasons.joined(separator: "；")
+        if !references.isEmpty {
+            summary += "\n参考：" + zip(evaluation.references, references).map { "\($0.0.counterpart)（\($0.1["source"]?.stringValue ?? "")）" }
+                .joined(separator: "、")
+        }
+        if !evaluation.commonCounterparts.isEmpty {
+            summary += "\n律诗常对：" + evaluation.commonCounterparts.map { "\($0.text)（\($0.count)）" }.joined(separator: "、")
+        }
+        return (summary, [
+            "text": .string(text), "answer": .string(answer), "mode": .string(score.mode.displayName),
+            "level": .string(score.level.displayName), "reasons": .array(score.reasons.map(JSONValue.string)),
+            "meter": score.meter.map { .string($0.rawValue) } ?? .null,
+            "positions": .array(positions), "references": .array(references),
+            "common_counterparts": .array(evaluation.commonCounterparts.map { ["text": .string($0.text), "count": .number(Double($0.count))] }),
+        ])
+    }
+
     private func requireClassic(_ work: ClassicWork) async throws {
         guard try await service.classics.installed().contains(where: { $0.work == work }) else {
             throw RPCError.invalidParams("尚未下载《\(work.name)》，请先在诗词助手的「语料包」页面下载")
@@ -353,8 +398,8 @@ public final class MCPServer {
 
     private func describe(_ source: CoupletSuggestion.Source) -> String {
         switch source {
-        case .shengLv(let index):
-            "声律启蒙·\(service.shengLv.sections.indices.contains(index) ? service.shengLv.sections[index].title : "?")"
+        case .primer(let work, let index):
+            "\(work.name)·\(service.primer(work).sections.indices.contains(index) ? service.primer(work).sections[index].title : "?")"
         case .yunfu(let head, let groupID):
             "佩文韵府对语·\(head)（\(service.dictionary.groups.indices.contains(groupID) ? service.dictionary.groups[groupID].displayName : "?")）"
         }
@@ -457,9 +502,14 @@ enum MCPTools {
             "same_rhyme": ["type": "boolean", "description": "true 时取与 char 同韵各字的韵藻；默认只取以 char 结尾的"],
             "limit": limitProperty,
          ], required: ["char"])],
-        ["name": "find_couplet", "description": "对仗：《声律启蒙》与佩文韵府「对语」中与该词相对的另一边。",
+        ["name": "find_couplet", "description": "对仗：《声律启蒙》《笠翁对韵》与佩文韵府「对语」中与该词相对的另一边。",
          "inputSchema": schema(["text": ["type": "string", "description": "一边的词，如「云」「来鸿」"], "limit": limitProperty],
                                required: ["text"])],
+        ["name": "score_couplet", "description": "对仗评分（工、可、宽、失）：查字数、出对重字、平仄相对（五七言查律对），并按语料中律诗中间各联的同位字统计给出各字的对仗度；附《声律启蒙》《笠翁对韵》、佩文对语与律诗中的参考对。评分只作参考，不判断词性与句法。",
+         "inputSchema": schema([
+            "text": ["type": "string", "description": "出词或出句，如「明月」「风急天高猿啸哀」"],
+            "answer": ["type": "string", "description": "对词或对句"],
+         ], required: ["text", "answer"])],
         ["name": "search_leiju", "description": "检索《艺文类聚》：按子目（如「衡山」「七月七日」）或全文关键词。需先在 App 中下载艺文类聚。",
          "inputSchema": schema([
             "query": ["type": "string", "description": "全文关键词（繁简不拘）"],
