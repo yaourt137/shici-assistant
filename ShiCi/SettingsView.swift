@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var windowHeight = Int(MainWindowSize.defaultSize.height)
     @State private var isMainWindowOpen = true
     @State private var customCharacter = ""
+    @AppStorage(MarkInk.storageKey) private var markInk: MarkInk = .vermilion
 
     /// shici-mcp 由 `swift build -c release` 在 PoetryCore/.build 下生成（自用版不随 App 打包）。
     private var mcpBinaryPath: String {
@@ -32,6 +33,14 @@ struct SettingsView: View {
                     Text("首次使用前在 PoetryCore 目录执行 swift build -c release。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            Section("读诗") {
+                Picker("圈点颜色", selection: $markInk) {
+                    ForEach(MarkInk.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .fixedSize()
+                Text("圈、点、专名线、书名线的颜色：朱笔或墨笔。").font(.caption).foregroundStyle(.secondary)
             }
             Section("窗口") {
                 HStack {

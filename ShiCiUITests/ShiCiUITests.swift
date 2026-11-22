@@ -101,6 +101,45 @@ final class ShiCiUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["卷上 · 一、東"].waitForExistence(timeout: 5))
     }
 
+    func testReadingPasteMarkAndNote() {
+        app.descendants(matching: .any)["sidebarReading"].firstMatch.click()
+        let paste = app.buttons["readingPaste"]
+        XCTAssertTrue(paste.waitForExistence(timeout: 5))
+        paste.click()
+        let title = app.textFields["pasteTitle"]
+        XCTAssertTrue(title.waitForExistence(timeout: 5))
+        title.click()
+        title.typeText("登鹳雀楼")
+        let body = app.textViews["pasteBody"]
+        body.click()
+        body.typeText("白日依山尽，黄河入海流。")
+        app.buttons["开始读"].click()
+
+        let canvas = app.descendants(matching: .any)["readingCanvas"]
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5))
+        let origin = canvas.coordinate(withNormalizedOffset: .zero)
+        // 字格宽 26 至 34 点，字在格子上方 14 点以下：第一、二字的格子都含这两个横坐标。
+        origin.withOffset(CGVector(dx: 12, dy: 30)).click()
+        app.buttons["readingMark-圈"].click()
+        XCTAssertTrue(app.staticTexts["圈点 1 · 批注 0"].waitForExistence(timeout: 5), "单字加圈")
+
+        origin.withOffset(CGVector(dx: 45, dy: 30)).doubleClick()
+        app.buttons["readingMark-专名线"].click()
+        XCTAssertTrue(app.staticTexts["圈点 2 · 批注 0"].waitForExistence(timeout: 5), "双击整句密圈（并入原来的圈），再加专名线")
+
+        app.buttons["批注"].click()
+        let note = app.textViews["noteText"]
+        XCTAssertTrue(note.waitForExistence(timeout: 5))
+        note.click()
+        note.typeText("起句")
+        app.buttons["保存"].click()
+        XCTAssertTrue(app.staticTexts["圈点 2 · 批注 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["起句"].exists)
+
+        app.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["圈点 2 · 批注 0"].waitForExistence(timeout: 5), "撤销批注")
+    }
+
     func testFilterExpressionErrorIsShown() {
         app.buttons["sidebarAllPhrases"].firstMatch.click()
         let filter = app.textFields["filterField"]

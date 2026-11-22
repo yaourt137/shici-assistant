@@ -14,7 +14,7 @@ public enum LibraryError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// 用户库：作品、收藏、标签、智能收藏夹、对仗练习记录与设置。
+/// 用户库：作品、收藏、标签、智能收藏夹、对仗练习记录、圈点本与设置。
 public final class LibraryStore {
     private let database: SQLiteDatabase
 
@@ -76,6 +76,18 @@ public final class LibraryStore {
             created_at REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS drill_attempts_key ON drill_attempts(question_key, created_at);
+        CREATE TABLE IF NOT EXISTS marked_poems (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            author TEXT,
+            dynasty TEXT,
+            origin TEXT NOT NULL,
+            body TEXT NOT NULL,
+            marks TEXT NOT NULL,
+            notes TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
         """)
         // 读音指定为后加的列，旧库需补上。
         let poemColumns = try database.query("PRAGMA table_info(poems)") { $0.text(1) }
@@ -328,6 +340,60 @@ public final class LibraryStore {
 
     public func deleteDrillAttempt(id: UUID) throws {
         try database.run("DELETE FROM drill_attempts WHERE id = ?", [.text(id.uuidString)])
+    }
+
+    // MARK: - 圈点本
+
+    private static let markedPoemColumns = """
+        id, title, author, dynasty, origin, body, marks, notes, created_at, updated_at FROM marked_poems
+        """
+
+    private func mapMarkedPoem(_ row: SQLRow) throws -> MarkedPoem {
+        guard let id = UUID(uuidString: row.text(0)) else { throw LibraryError.notFound("圈点本 id 格式错误：\(row.text(0))") }
+        let decoder = JSONDecoder()
+        return MarkedPoem(id: id, title: row.text(1), author: row.optionalText(2), dynasty: row.optionalText(3),
+                          origin: try decoder.decode(MarkedPoemOrigin.self, from: Data(row.text(4).utf8)), body: row.text(5),
+                          marks: try decoder.decode([PoemMark].self, from: Data(row.text(6).utf8)),
+                          notes: try decoder.decode([PoemNote].self, from: Data(row.text(7).utf8)),
+                          createdAt: Date(timeIntervalSince1970: row.double(8)),
+                          updatedAt: Date(timeIntervalSince1970: row.double(9)))
+    }
+
+    /// 全部圈点本，最近读过的在前。
+    public func markedPoems() throws -> [MarkedPoem] {
+        try database.query("SELECT \(LibraryStore.markedPoemColumns) ORDER BY updated_at DESC", [], mapMarkedPoem)
+    }
+
+    public func markedPoem(id: UUID) throws -> MarkedPoem? {
+        try database.query("SELECT \(LibraryStore.markedPoemColumns) WHERE id = ?", [.text(id.uuidString)], mapMarkedPoem).first
+    }
+
+    /// 题目、作者与正文都相同的圈点本（从语料再次打开同一首时沿用）。
+    public func markedPoem(title: String, author: String?, body: String) throws -> MarkedPoem? {
+        try database.query("""
+            SELECT \(LibraryStore.markedPoemColumns) WHERE title = ? AND COALESCE(author, '') = ? AND body = ?
+            ORDER BY updated_at DESC LIMIT 1
+            """, [.text(title), .text(author ?? ""), .text(body)], mapMarkedPoem).first
+    }
+
+    /// 插入或更新圈点本（正文与来源不变）。
+    public func save(_ poem: MarkedPoem) throws {
+        func json<Value: Encodable>(_ value: Value) throws -> String {
+            String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
+        }
+        try database.run("""
+            INSERT INTO marked_poems (id, title, author, dynasty, origin, body, marks, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, dynasty = excluded.dynasty,
+                marks = excluded.marks, notes = excluded.notes, updated_at = excluded.updated_at
+            """, [.text(poem.id.uuidString), .text(poem.title), .optional(poem.author),
+                  .optional(poem.dynasty), .text(try json(poem.origin)), .text(poem.body),
+                  .text(try json(poem.marks)), .text(try json(poem.notes)),
+                  .real(poem.createdAt.timeIntervalSince1970), .real(poem.updatedAt.timeIntervalSince1970)])
+    }
+
+    public func deleteMarkedPoem(id: UUID) throws {
+        try database.run("DELETE FROM marked_poems WHERE id = ?", [.text(id.uuidString)])
     }
 
     // MARK: - 设置

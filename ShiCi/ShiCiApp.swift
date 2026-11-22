@@ -34,6 +34,16 @@ struct ShiCiApp: App {
             }
         }
 
+        // 从语料全文打开的圈点本，单独成窗。
+        WindowGroup("读诗", id: MarkedPoemReader.windowID, for: UUID.self) { $poemID in
+            if let model, let poemID {
+                MarkedPoemReader(poemID: poemID)
+                    .environment(model)
+                    .frame(minWidth: 640, minHeight: 480)
+            }
+        }
+        .defaultSize(width: 900, height: 640)
+
         Settings {
             if let model {
                 SettingsView()

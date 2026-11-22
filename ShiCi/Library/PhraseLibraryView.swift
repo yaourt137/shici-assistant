@@ -369,15 +369,17 @@ struct PhraseEditorSheet: View {
     @State private var text: String
     @State private var kind: PhraseKind?
     @State private var provenanceKind: ProvenanceKind
-    @State private var source = SourceInfo()
+    @State private var source: SourceInfo
     @State private var tags: [String]
     @State private var note = ""
     @State private var isSaving = false
     private let draftID: UUID?
 
-    init(initialText: String, initialKind: ProvenanceKind, draftID: UUID?, initialTags: [String] = []) {
+    init(initialText: String, initialKind: ProvenanceKind, draftID: UUID?, initialTags: [String] = [],
+         initialSource: SourceInfo = SourceInfo()) {
         _text = State(initialValue: initialText)
         _provenanceKind = State(initialValue: initialKind)
+        _source = State(initialValue: initialSource)
         _tags = State(initialValue: initialTags)
         self.draftID = draftID
     }

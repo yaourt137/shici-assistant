@@ -54,6 +54,23 @@ public enum ParallelCouplets {
         }
         return counts
     }
+
+    /// `text` 与 `counterpart` 在两句中同位相对的起始位置（哪一边在出句均可），与 `countPairs` 的计数方式一致。
+    /// 两者须等长且不同，两句须等长；否则为空。
+    public static func alignedPositions(of text: String, with counterpart: String, left: String, right: String) -> [Int] {
+        let word = Array(text)
+        let other = Array(counterpart)
+        let leftCharacters = Array(left)
+        let rightCharacters = Array(right)
+        guard !word.isEmpty, word.count == other.count, word != other,
+              leftCharacters.count == rightCharacters.count, word.count <= leftCharacters.count else { return [] }
+        return (0...(leftCharacters.count - word.count)).filter { start in
+            let range = start..<start + word.count
+            let leftPart = Array(leftCharacters[range])
+            let rightPart = Array(rightCharacters[range])
+            return (leftPart == word && rightPart == other) || (leftPart == other && rightPart == word)
+        }
+    }
 }
 
 extension CorpusIndex {
@@ -149,5 +166,22 @@ extension CorpusIndex {
             SELECT b, n FROM parallel_pairs WHERE a = ? UNION ALL SELECT a, n FROM parallel_pairs WHERE b = ?
             ORDER BY 2 DESC, 1 LIMIT ?
             """, [.text(text), .text(text), .int(limit)]) { (text: $0.text(0), count: $0.int(1)) }
+    }
+
+    /// 律诗对仗中 `text` 与 `counterpart`（简体）同位相对的联，按作品与句序：返回总联数与前 `limit` 联。
+    public func parallelExamples(of text: String, with counterpart: String,
+                                 limit: Int = 100) throws -> (total: Int, couplets: [ParallelCouplet]) {
+        guard !text.isEmpty, text.count == counterpart.count, text != counterpart else { return (0, []) }
+        let rows = try database.query("""
+            SELECT work_id, idx, left, right FROM parallel_lines
+            WHERE (instr(left, ?) > 0 AND instr(right, ?) > 0) OR (instr(left, ?) > 0 AND instr(right, ?) > 0)
+            ORDER BY work_id, idx
+            """, [.text(text), .text(counterpart), .text(counterpart), .text(text)]) { row in
+            ParallelCouplet(workID: row.int64(0), lineIndex: row.int(1), left: row.text(2), right: row.text(3))
+        }
+        let matched = rows.filter {
+            !ParallelCouplets.alignedPositions(of: text, with: counterpart, left: $0.left, right: $0.right).isEmpty
+        }
+        return (matched.count, Array(matched.prefix(max(0, limit))))
     }
 }

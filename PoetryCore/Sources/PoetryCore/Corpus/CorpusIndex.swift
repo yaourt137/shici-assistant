@@ -538,6 +538,11 @@ public actor CorpusIndex {
         }.first
     }
 
+    /// 作品正文的原书字形（`work(id:)` 给出的是简体）。
+    public func originalBody(id: Int64) throws -> String? {
+        try database.query("SELECT body FROM works WHERE id = ?", [.integer(id)]) { $0.text(0) }.first
+    }
+
     /// 字频（已启用语料包合计），用于韵书浏览排序。
     public func characterFrequencies() throws -> [Character: Int] {
         let rows = try database.query("""

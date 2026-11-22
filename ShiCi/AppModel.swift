@@ -11,6 +11,7 @@ enum SidebarItem: Hashable {
     case smart(UUID)
     case rhymeBook
     case leiju
+    case reading
     case drill
     case packs
 }
@@ -40,6 +41,10 @@ final class AppModel {
     var agentWritesToInbox = true
     var mcpReadOnly = false
     var customReadings: [CustomReading] = []
+    /// 圈点本，最近读过的在前。
+    var markedPoems: [MarkedPoem] = []
+    /// 「读诗」页中正在读的一本。
+    var readingSelection: UUID?
     /// 随自定义读音更新；作为可观察属性，依赖它的视图会随之刷新。
     private(set) var dictionary: CharDictionary
     private(set) var analyzer: PoemAnalyzer
@@ -69,6 +74,7 @@ final class AppModel {
             agentWritesToInbox = try service.library.bool(.agentWritesToInbox)
             mcpReadOnly = try service.library.bool(.mcpReadOnly)
             customReadings = try service.library.customReadings()
+            markedPoems = try service.library.markedPoems()
         }
     }
 
@@ -227,6 +233,97 @@ final class AppModel {
             errorMessage = String(describing: error)
             return nil
         }
+    }
+
+    /// 按作品 id 取全文；找不到或出错时提示并返回 nil。
+    func corpusWork(id: Int64) async -> CorpusWork? {
+        do {
+            guard let work = try await service.corpus.work(id: id) else {
+                errorMessage = "语料中找不到这首作品，所在语料包可能已删除或重新导入。"
+                return nil
+            }
+            return work
+        } catch {
+            errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
+    // MARK: - 读诗
+
+    func markedPoem(_ id: UUID) -> MarkedPoem? {
+        markedPoems.first { $0.id == id }
+    }
+
+    /// 从语料打开一首读（已有圈点本则沿用）；出错时提示并返回 nil。
+    func openMarkedPoem(corpusWorkID: Int64) async -> MarkedPoem? {
+        do {
+            let poem = try await service.openMarkedPoem(corpusWorkID: corpusWorkID)
+            storeInList(poem)
+            return poem
+        } catch {
+            errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
+    /// 新建粘入的圈点本；出错时提示并返回 nil。
+    func createMarkedPoem(title: String, author: String, dynasty: String, text: String) -> MarkedPoem? {
+        do {
+            let poem = try service.createMarkedPoem(title: title, author: author, dynasty: dynasty, text: text)
+            storeInList(poem)
+            return poem
+        } catch {
+            errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
+    /// 修改圈点本并保存，可撤销；`change` 出错时提示且不保存。
+    func updateMarkedPoem(_ id: UUID, actionName: String, undoManager: UndoManager?,
+                          _ change: (inout MarkedPoem) throws -> Void) {
+        guard let previous = markedPoem(id) else { return }
+        var updated = previous
+        do {
+            try change(&updated)
+        } catch {
+            errorMessage = String(describing: error)
+            return
+        }
+        guard updated != previous else { return }
+        updated.updatedAt = Date()
+        replaceMarkedPoem(with: updated, previous: previous, actionName: actionName, undoManager: undoManager)
+    }
+
+    /// 保存 `version`，并登记撤销（撤销时换回 `previous`，重做同理）。
+    private func replaceMarkedPoem(with version: MarkedPoem, previous: MarkedPoem, actionName: String, undoManager: UndoManager?) {
+        do {
+            try service.library.save(version)
+        } catch {
+            errorMessage = String(describing: error)
+            return
+        }
+        storeInList(version)
+        undoManager?.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                model.replaceMarkedPoem(with: previous, previous: version, actionName: actionName, undoManager: undoManager)
+            }
+        }
+        undoManager?.setActionName(actionName)
+    }
+
+    func deleteMarkedPoem(_ id: UUID) {
+        perform {
+            try service.library.deleteMarkedPoem(id: id)
+            markedPoems.removeAll { $0.id == id }
+            if readingSelection == id { readingSelection = nil }
+        }
+    }
+
+    private func storeInList(_ poem: MarkedPoem) {
+        markedPoems.removeAll { $0.id == poem.id }
+        markedPoems.append(poem)
+        markedPoems.sort { $0.updatedAt > $1.updatedAt }
     }
 
     /// 启动时导入 Packs 目录中尚未导入的语料包。

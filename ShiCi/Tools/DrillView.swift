@@ -221,14 +221,13 @@ struct DrillPracticeView: View {
             var references: [CoupletResult.Reference] = []
             for reference in evaluation.references.prefix(12)
             where converter.simplified(TextSegmenter.hanOnly(reference.counterpart)) != ownReference {
-                references.append(.init(text: reference.counterpart, source: try await service.describe(reference.source)))
+                references.append(.init(text: reference.counterpart, source: try await service.describe(reference.source),
+                                        item: reference.source))
             }
             try await service.recordDrill(question, answer: answer, level: evaluation.score.level)
-            var workID: Int64?
-            if case .corpus(let id, _) = question.source { workID = id }
             result = CoupletResult(prompt: question.prompt, answer: answer, score: evaluation.score,
                                    commonCounterparts: evaluation.commonCounterparts,
-                                   original: .init(text: question.reference, source: origin), originalWorkID: workID,
+                                   original: .init(text: question.reference, source: origin, item: question.source),
                                    references: references, previous: previous)
         } catch let error as CoupletScoreError {
             model.errorMessage = error.description
@@ -302,11 +301,12 @@ struct FreeCoupletView: View {
             let score = hanCount(answer) > 0 ? try await service.evaluateCouplet(prompt: prompt, answer: answer).score : nil
             var references: [CoupletResult.Reference] = []
             for reference in lookup.references.prefix(20) {
-                references.append(.init(text: reference.counterpart, source: try await service.describe(reference.source)))
+                references.append(.init(text: reference.counterpart, source: try await service.describe(reference.source),
+                                        item: reference.source))
             }
             result = CoupletResult(prompt: prompt, answer: score == nil ? nil : answer, score: score,
                                    commonCounterparts: lookup.commonCounterparts,
-                                   original: nil, originalWorkID: nil, references: references, previous: [])
+                                   original: nil, references: references, previous: [])
         } catch let error as CoupletScoreError {
             model.errorMessage = error.description
         } catch {
@@ -322,6 +322,8 @@ struct CoupletResult {
     struct Reference: Hashable {
         let text: String
         let source: String
+        /// 题库中的出处：出自语料时可查看全文，出自佩文对语时可查看韵府。
+        let item: DrillItemSource?
     }
 
     let prompt: String
@@ -331,7 +333,6 @@ struct CoupletResult {
     let commonCounterparts: [ParallelCounterpart]
     /// 原书或原诗的另一边。
     let original: Reference?
-    let originalWorkID: Int64?
     let references: [Reference]
     /// 此题以往的作答（不含本次），新的在前。
     let previous: [DrillAttempt]
@@ -343,6 +344,8 @@ struct CoupletResultView: View {
     let display: (String) -> String
 
     @State private var viewingWork: CorpusWork?
+    @State private var viewingYunfuHead: Character?
+    @State private var viewingExamples: ParallelExamplesQuery?
 
 
     static func color(_ level: CoupletScore.Level) -> Color {
@@ -378,9 +381,7 @@ struct CoupletResultView: View {
                     Text("原文").foregroundStyle(.secondary)
                     Text(display(original.text)).font(.system(size: 20, design: .serif)).textSelection(.enabled)
                     Text(original.source).font(.caption).foregroundStyle(.secondary)
-                    if result.originalWorkID != nil {
-                        Button("查看全文") { Task { await openWork() } }.controlSize(.small)
-                    }
+                    sourceButton(original.item)
                 }
             }
             if !result.references.isEmpty {
@@ -390,6 +391,7 @@ struct CoupletResultView: View {
                         HStack(alignment: .firstTextBaseline) {
                             Text(display(reference.text)).font(.system(.body, design: .serif)).textSelection(.enabled)
                             Text(reference.source).font(.caption).foregroundStyle(.secondary)
+                            sourceButton(reference.item)
                         }
                     }
                 }
@@ -397,9 +399,18 @@ struct CoupletResultView: View {
             if !result.commonCounterparts.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("律诗对仗中常与「\(model.dictionary.converter.simplified(TextSegmenter.hanOnly(result.prompt)))」相对").font(.headline)
-                    Text(result.commonCounterparts.map { "\($0.text) \($0.count)" }.joined(separator: "　"))
-                        .font(.system(.body, design: .serif))
-                        .textSelection(.enabled)
+                    FlowLayout(spacing: 12) {
+                        ForEach(result.commonCounterparts, id: \.self) { counterpart in
+                            Button("\(counterpart.text) \(counterpart.count)") {
+                                viewingExamples = ParallelExamplesQuery(
+                                    text: model.dictionary.converter.simplified(TextSegmenter.hanOnly(result.prompt)),
+                                    counterpart: counterpart.text)
+                            }
+                            .buttonStyle(.link)
+                            .font(.system(.body, design: .serif))
+                            .help("查看律诗中的这些对仗")
+                        }
+                    }
                 }
             }
             if !result.previous.isEmpty {
@@ -418,6 +429,20 @@ struct CoupletResultView: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
         .sheet(item: $viewingWork) { CorpusWorkView(work: $0) }
+        .sheet(isPresented: Binding(get: { viewingYunfuHead != nil }, set: { if !$0 { viewingYunfuHead = nil } })) {
+            if let head = viewingYunfuHead { YunfuCharacterSheet(character: head) }
+        }
+        .sheet(item: $viewingExamples) { ParallelExamplesSheet(query: $0) }
+    }
+
+    /// 出自语料时「查看全文」，出自佩文对语时「查看韵府」。
+    @ViewBuilder
+    private func sourceButton(_ item: DrillItemSource?) -> some View {
+        if let workID = item?.corpusWorkID {
+            Button("查看全文") { Task { await openWork(workID) } }.controlSize(.small)
+        } else if let head = item?.yunfuHead?.first {
+            Button("查看韵府") { viewingYunfuHead = head }.controlSize(.small)
+        }
     }
 
     private func positionGrid(_ score: CoupletScore) -> some View {
@@ -499,13 +524,113 @@ struct CoupletResultView: View {
         .help("收进收藏，标签「对仗/\(mode.displayName)」")
     }
 
-    private func openWork() async {
-        guard let id = result.originalWorkID else { return }
+    private func openWork(_ id: Int64) async {
+        viewingWork = await model.corpusWork(id: id)
+    }
+}
+
+/// 佩文韵府中一个韵字的对语。
+struct YunfuCharacterSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let character: Character
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            YunfuCharacterView(character: character, onlyKind: .duiyu)
+            HStack {
+                Spacer()
+                Button("关闭") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 560, height: 520)
+    }
+}
+
+/// 要查看用例的一对字词（简体）。
+struct ParallelExamplesQuery: Identifiable, Hashable {
+    let text: String
+    let counterpart: String
+
+    var id: String { "\(text)|\(counterpart)" }
+}
+
+/// 律诗对仗中两个字词同位相对的各联，所查字词高亮；可查看全文。
+struct ParallelExamplesSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let query: ParallelExamplesQuery
+
+    /// 一次最多列出的联数。
+    private static let limit = 200
+
+    @State private var examples: [ParallelExample] = []
+    @State private var total = 0
+    @State private var isLoading = true
+    @State private var viewingWork: CorpusWork?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("律诗对仗中「\(query.text)」与「\(query.counterpart)」相对").font(.headline)
+            if isLoading {
+                ProgressView().controlSize(.small)
+            } else if examples.isEmpty {
+                Text("没有找到用例。").foregroundStyle(.secondary)
+            } else {
+                Text(total > examples.count ? "共 \(total) 联，列出前 \(examples.count) 联。" : "共 \(total) 联。")
+                    .font(.caption).foregroundStyle(.secondary)
+                List(examples) { example in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(highlighted(example.couplet.left, at: example.positions) + AttributedString("，")
+                                 + highlighted(example.couplet.right, at: example.positions))
+                                .font(.system(.body, design: .serif))
+                                .textSelection(.enabled)
+                            Text(example.source).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("查看全文") { Task { await openWork(example.couplet.workID) } }.controlSize(.small)
+                    }
+                }
+                .listStyle(.inset)
+            }
+            HStack {
+                Spacer()
+                Button("关闭") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 560, height: 520)
+        .task { await load() }
+        .sheet(item: $viewingWork) { CorpusWorkView(work: $0) }
+    }
+
+    private func highlighted(_ line: String, at positions: [Int]) -> AttributedString {
+        let length = query.text.count
+        var result = AttributedString()
+        for (offset, character) in line.enumerated() {
+            var piece = AttributedString(String(character))
+            if positions.contains(where: { (($0)..<($0 + length)).contains(offset) }) {
+                piece.foregroundColor = .accentColor
+            }
+            result += piece
+        }
+        return result
+    }
+
+    private func load() async {
+        defer { isLoading = false }
         do {
-            viewingWork = try await model.service.corpus.work(id: id)
+            let found = try await model.service.parallelExamples(of: query.text, with: query.counterpart,
+                                                                  limit: ParallelExamplesSheet.limit)
+            (total, examples) = (found.total, found.examples)
         } catch {
             model.errorMessage = String(describing: error)
         }
+    }
+
+    private func openWork(_ id: Int64) async {
+        viewingWork = await model.corpusWork(id: id)
     }
 }
 

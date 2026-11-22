@@ -6,6 +6,17 @@ public struct ParallelCounterpart: Sendable, Hashable {
     public let count: Int
 }
 
+/// 律诗对仗中的一个用例。
+public struct ParallelExample: Sendable, Hashable, Identifiable {
+    public let couplet: ParallelCouplet
+    /// 出处说明，例如「〔唐〕王维《山居秋暝》」。
+    public let source: String
+    /// 所查字词在两句中同位相对的起始位置。
+    public let positions: [Int]
+
+    public var id: String { "\(couplet.workID)-\(couplet.lineIndex)" }
+}
+
 /// 某出题的参考。
 public struct CoupletReferences: Sendable {
     /// 题库中与出题相对的各边（原书、原诗），按题库顺序。
@@ -63,6 +74,29 @@ extension PoetryService {
             ? try await corpus.parallelCounterparts(of: promptNorm).map { ParallelCounterpart(text: $0.text, count: $0.count) }
             : []
         return CoupletReferences(references: references, commonCounterparts: common)
+    }
+
+    /// 律诗对仗中 `text` 与 `counterpart` 同位相对的联（繁简不论），附出处：返回总联数与前 `limit` 联。
+    nonisolated(nonsending) public func parallelExamples(of text: String, with counterpart: String,
+                                                         limit: Int = 100) async throws -> (total: Int, examples: [ParallelExample]) {
+        let converter = dictionary.converter
+        let word = converter.simplified(TextSegmenter.hanOnly(text))
+        let other = converter.simplified(TextSegmenter.hanOnly(counterpart))
+        let found = try await corpus.parallelExamples(of: word, with: other, limit: limit)
+        var sources: [Int64: String] = [:]
+        var examples: [ParallelExample] = []
+        for couplet in found.couplets {
+            let source: String
+            if let known = sources[couplet.workID] {
+                source = known
+            } else {
+                source = try await describe(.corpus(workID: couplet.workID, lineIndex: couplet.lineIndex))
+                sources[couplet.workID] = source
+            }
+            examples.append(ParallelExample(couplet: couplet, source: source, positions: ParallelCouplets.alignedPositions(
+                of: word, with: other, left: couplet.left, right: couplet.right)))
+        }
+        return (found.total, examples)
     }
 
     /// 评分：对句与题库中某一边相同即注明出处；附参考。

@@ -55,6 +55,8 @@ struct ContentView: View {
             RhymeBrowserView()
         case .leiju:
             LeijuBrowserView()
+        case .reading:
+            ReadingHomeView()
         case .drill:
             DrillView()
         case .packs:

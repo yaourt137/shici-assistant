@@ -72,6 +72,24 @@ struct ParallelCoupletsTests {
         #expect(counts[PairKey("甲", "丙")] == nil)
     }
 
+    @Test("同位相对的位置：哪边在出句均可，与计数方式一致")
+    func alignedPositions() {
+        let aligned = { (text: String, counterpart: String, left: String, right: String) in
+            ParallelCouplets.alignedPositions(of: text, with: counterpart, left: left, right: right)
+        }
+        #expect(aligned("月", "泉", "明月松间照", "清泉石上流") == [1])
+        #expect(aligned("泉", "月", "明月松间照", "清泉石上流") == [1], "对句一边亦可")
+        #expect(aligned("明月", "清泉", "明月松间照", "清泉石上流") == [0])
+        #expect(aligned("间照", "上流", "明月松间照", "清泉石上流") == [3], "末两字")
+        #expect(aligned("月", "流", "明月松间照", "清泉石上流").isEmpty, "不同位")
+        #expect(aligned("风", "月", "风风", "月月") == [0, 1], "每个位置都算")
+        #expect(aligned("月", "月", "明月", "清月").isEmpty, "两边相同不算")
+        #expect(aligned("明月", "泉", "明月松间照", "清泉石上流").isEmpty, "不等长")
+        #expect(aligned("", "", "明月", "清泉").isEmpty)
+        #expect(aligned("月", "泉", "明月松", "清泉").isEmpty, "两句不等长")
+        #expect(aligned("明月松", "清泉石", "明月", "清泉").isEmpty, "比句子长")
+    }
+
     @Test("由语料重建统计；语料变动后需重建")
     func buildFromCorpus() async throws {
         let directory = try TemporaryDirectory()
@@ -93,6 +111,16 @@ struct ParallelCoupletsTests {
         #expect(try await index.parallelCounterparts(of: "月").map(\.text) == ["泉", "金"])
         #expect(try await index.parallelCounterparts(of: "").isEmpty)
         #expect(try await index.parallelCounterparts(of: "月", limit: 0).isEmpty)
+        let moon = try await index.parallelExamples(of: "月", with: "泉")
+        #expect(moon.total == 1)
+        #expect(moon.couplets.map(\.left) == ["明月松间照"])
+        #expect(try await index.parallelExamples(of: "金", with: "月").couplets.map(\.right) == ["家书抵万金"], "哪边在出句均可")
+        #expect(try await index.parallelExamples(of: "月", with: "流").total == 0, "同在一联但不同位")
+        let limited = try await index.parallelExamples(of: "月", with: "泉", limit: 0)
+        #expect(limited.total == 1 && limited.couplets.isEmpty, "总数不受 limit 影响")
+        #expect(try await index.parallelExamples(of: "月", with: "月").total == 0)
+        #expect(try await index.parallelExamples(of: "", with: "").total == 0)
+        #expect(try await index.parallelExamples(of: "明月", with: "泉").total == 0)
 
         try await index.setEnabled(false, packID: "drill-pack")
         #expect(try await !index.isParallelIndexCurrent(), "停用语料包后需重建")
@@ -312,6 +340,18 @@ struct DrillPoolTests {
         #expect(DrillMode(length: 5) == .line)
     }
 
+    @Test("只有出自语料的才有作品 id，只有出自佩文对语的才有韵字")
+    func sourceAccessors() {
+        #expect(DrillItemSource.yunfu(head: "愁", groupID: 3).yunfuHead == "愁")
+        #expect(DrillItemSource.corpus(workID: 1, lineIndex: 2).yunfuHead == nil)
+        #expect(DrillItemSource.primer(.shengLvQiMeng, sectionIndex: 0).yunfuHead == nil)
+        #expect(DrillItemSource.corpus(workID: 42, lineIndex: 2).corpusWorkID == 42)
+        #expect(DrillItemSource.corpus(workID: 0, lineIndex: 0).corpusWorkID == 0)
+        #expect(DrillItemSource.primer(.shengLvQiMeng, sectionIndex: 0).corpusWorkID == nil)
+        #expect(DrillItemSource.primer(.liwengDuiyun, sectionIndex: 3).corpusWorkID == nil)
+        #expect(DrillItemSource.yunfu(head: "東", groupID: 0).corpusWorkID == nil)
+    }
+
     @Test("按模式、来源、字数抽题；对句只以出句出题")
     func draw() {
         var generator = SeededGenerator(state: 7)
@@ -460,6 +500,24 @@ struct DrillServiceTests {
         let moonOnly = try await service.coupletReferences(for: "月")
         #expect(moonOnly.commonCounterparts.map(\.text) == ["泉", "金"])
         await #expect(throws: CoupletScoreError.emptyPrompt) { try await service.coupletReferences(for: "。") }
+    }
+
+    @Test("常对的用例：附出处与位置，繁简不论")
+    func examples() async throws {
+        let directory = try TemporaryDirectory()
+        let service = try makeService(directory)
+        _ = try await service.installPack(from: try DrillFixtures.makePack(in: directory))
+        _ = try await service.prepareDrill()
+
+        let moon = try await service.parallelExamples(of: "月", with: "泉")
+        #expect(moon.total == 1)
+        #expect(moon.examples.first?.source == "〔唐〕王维《山居秋暝》")
+        #expect(moon.examples.first?.positions == [1])
+        let words = try await service.parallelExamples(of: "松間", with: "石上")
+        #expect(words.examples.map(\.couplet.left) == ["明月松间照"], "繁体输入")
+        #expect(words.examples.first?.positions == [2])
+        #expect(try await service.parallelExamples(of: "月", with: "雪").total == 0)
+        #expect(try await service.parallelExamples(of: "，", with: "。").total == 0, "没有汉字")
     }
 
     @Test("记录作答后，「只出新题」不再出，「只出答过的」只出它")

@@ -58,6 +58,18 @@ public enum DrillItemSource: Sendable, Hashable {
         case .corpus: .corpus
         }
     }
+
+    /// 出自语料时为作品 id（可查看全文），否则为 nil。
+    public var corpusWorkID: Int64? {
+        if case .corpus(let workID, _) = self { return workID }
+        return nil
+    }
+
+    /// 出自佩文韵府对语时为韵字（可查看韵府），否则为 nil。
+    public var yunfuHead: String? {
+        if case .yunfu(let head, _) = self { return head }
+        return nil
+    }
 }
 
 /// 题库中的一组对仗（两边字数相同）。

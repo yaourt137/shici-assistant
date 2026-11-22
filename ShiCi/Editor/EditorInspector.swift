@@ -379,6 +379,7 @@ struct UsagesSheet: View {
 struct CorpusWorkView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
     let work: CorpusWork
 
     @AppStorage("corpusShowTones") private var showTones = false
@@ -432,6 +433,14 @@ struct CorpusWorkView: View {
                 .fixedSize()
                 .disabled(!showTones && !showRhymes)
                 Spacer()
+                Button("读诗") {
+                    Task {
+                        if let poem = await model.openMarkedPoem(corpusWorkID: work.id) {
+                            openWindow(id: MarkedPoemReader.windowID, value: poem.id)
+                        }
+                    }
+                }
+                .help("在读诗窗口中打开，可圈点、批注")
                 Button("关闭") { dismiss() }.keyboardShortcut(.defaultAction)
             }
             .toggleStyle(.checkbox)

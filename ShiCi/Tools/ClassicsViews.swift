@@ -62,6 +62,8 @@ enum ClassicScript {
 struct YunfuCharacterView: View {
     @Environment(AppModel.self) private var model
     let character: Character
+    /// 只列这一类条目（例如从对仗训练查看对语时）；nil 为全部。
+    var onlyKind: YunfuEntryKind?
 
     @AppStorage(ClassicScript.storageKey) private var showSimplified = false
     @State private var entries: [YunfuEntry] = []
@@ -82,7 +84,7 @@ struct YunfuCharacterView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("佩文韵府「\(String(character))」").font(.headline)
+                Text("佩文韵府「\(String(character))」" + (onlyKind.map { " · \($0.displayName)" } ?? "")).font(.headline)
                 Spacer()
                 Toggle("简体", isOn: $showSimplified).toggleStyle(.checkbox)
             }
@@ -94,11 +96,13 @@ struct YunfuCharacterView: View {
             } else if entries.isEmpty {
                 Text("佩文韵府未收此字为韵字。").foregroundStyle(.secondary)
             } else {
-                Picker("字数", selection: $length) {
-                    Text("全部").tag(0)
-                    ForEach(lengths, id: \.self) { Text("\($0) 字").tag($0) }
+                if onlyKind == nil {
+                    Picker("字数", selection: $length) {
+                        Text("全部").tag(0)
+                        ForEach(lengths, id: \.self) { Text("\($0) 字").tag($0) }
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
                 List {
                     ForEach(sections, id: \.title) { section in
                         Section(section.title) {
@@ -125,7 +129,7 @@ struct YunfuCharacterView: View {
         var result: [EntrySection] = []
         for groupID in entries.map(\.groupID).reduce(into: [Int](), { if !$0.contains($1) { $0.append($1) } }) {
             let inGroup = entries.filter { $0.groupID == groupID }
-            for kind in YunfuEntryKind.allCases {
+            for kind in YunfuEntryKind.allCases where onlyKind == nil || kind == onlyKind {
                 var items = inGroup.filter { $0.kind == kind }
                 if length > 0, kind == .yunzao || kind == .zeng {
                     items = items.filter { TextSegmenter.hanOnly($0.phrase).count == length }
