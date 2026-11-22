@@ -543,6 +543,31 @@ public actor CorpusIndex {
         try database.query("SELECT body FROM works WHERE id = ?", [.integer(id)]) { $0.text(0) }.first
     }
 
+    /// 作品各句的原书字形，序号与 `lines.idx` 一致（校注已剥离）；作品不存在时为 nil。
+    public func originalLines(id: Int64) throws -> [String]? {
+        try originalBody(id: id).map { body in
+            TextSegmenter.segments(of: CorpusIndex.stripAnnotations(body), placeholders: [CorpusIndex.missingCharacter])
+                .map { String($0.map(\.character)) }
+        }
+    }
+
+    /// 作品的全文哈希；作品不存在时为 nil。旧版导入的语料尚未补算时先补算全部作品。
+    public func textHash(ofWork id: Int64) throws -> Int64? {
+        let rows = try database.query("SELECT text_hash FROM works WHERE id = ?", [.integer(id)]) { $0.isNull(0) ? nil : $0.int64(0) }
+        guard let stored = rows.first else { return nil }
+        if let stored { return stored }
+        try database.transaction { try backfillTextHashes() }
+        return try database.query("SELECT text_hash FROM works WHERE id = ?", [.integer(id)]) { $0.isNull(0) ? nil : $0.int64(0) }.first ?? nil
+    }
+
+    /// 按全文哈希找已启用语料包中的一首：非重复的优先，其次按语料包优先级与导入先后。
+    public func workID(textHash: Int64) throws -> Int64? {
+        try database.query("""
+            SELECT w.id FROM works w JOIN packs p ON p.id = w.pack_id WHERE w.text_hash = ? AND p.enabled = 1
+            ORDER BY w.duplicate_of IS NOT NULL, p.priority, p.imported_at, w.id LIMIT 1
+            """, [.integer(textHash)]) { $0.int64(0) }.first
+    }
+
     /// 字频（已启用语料包合计），用于韵书浏览排序。
     public func characterFrequencies() throws -> [Character: Int] {
         let rows = try database.query("""

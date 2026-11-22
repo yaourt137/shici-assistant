@@ -20,6 +20,14 @@ extension PoetryService {
         return poem
     }
 
+    /// 转为繁体：逐句先在已启用的繁体语料中找原句照抄字形，找不到的逐字查字表（多种繁体的列出待核对）。
+    nonisolated(nonsending) public func traditionalConversion(of text: String) async throws -> TraditionalConversion {
+        let converter = dictionary.converter
+        let norms = TextSegmenter.segments(of: text).map { converter.simplified(String($0.map(\.character))) }
+        let known = norms.isEmpty ? [:] : try await corpus.traditionalLines(for: norms)
+        return TraditionalConversion.convert(text, converter: converter, known: known)
+    }
+
     /// 新建粘入的圈点本：整理正文的空白与空行；正文没有汉字时报错。题目、作者、朝代可空。
     public func createMarkedPoem(title: String, author: String?, dynasty: String?, text: String,
                                  now: Date = Date()) throws -> MarkedPoem {

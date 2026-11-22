@@ -77,8 +77,8 @@ public struct MarkedPoem: Sendable, Hashable, Identifiable {
     public var author: String?
     public var dynasty: String?
     public let origin: MarkedPoemOrigin
-    /// 正文，按换行分行（只用 `\n`）。
-    public let body: String
+    /// 正文，按换行分行（只用 `\n`）。只能逐字换字形（见 `replaceText`），以免圈点与批注错位。
+    public private(set) var body: String
     public var marks: [PoemMark]
     public var notes: [PoemNote]
     public let createdAt: Date
@@ -345,17 +345,37 @@ public enum MarkedPoemError: Error, Equatable, CustomStringConvertible {
     case emptyNote
     case invalidRange
     case noteNotFound
+    case textMismatch
 
     public var description: String {
         switch self {
         case .emptyNote: "批注内容为空"
         case .invalidRange: "所选位置不在正文中"
         case .noteNotFound: "找不到这条批注"
+        case .textMismatch: "新正文须与原正文逐字对应（字数与换行位置相同）"
         }
     }
 }
 
 extension MarkedPoem {
+    /// 换用另一种字形（如转为繁体）：新正文须与原正文逐字对应（字数相同、换行位置相同），圈点与批注因而不错位。
+    /// 题目、作者、朝代一并换上；作者、朝代去掉首尾空白后为空则为 nil。
+    public mutating func replaceText(title: String, author: String?, dynasty: String?, body newBody: String) throws {
+        let old = Array(body)
+        let new = Array(newBody)
+        guard old.count == new.count, zip(old, new).allSatisfy({ ($0 == "\n") == ($1 == "\n") }) else {
+            throw MarkedPoemError.textMismatch
+        }
+        let clean = { (value: String?) -> String? in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.author = clean(author)
+        self.dynasty = clean(dynasty)
+        body = newBody
+    }
+
     /// 在所选范围加一种圈点（再按一次取消）；范围越界的部分忽略。
     public mutating func applyMark(_ kind: PoemMarkKind, to range: LineRange) throws {
         guard let range = PoemMarking.clamped(range, in: lines) else { throw MarkedPoemError.invalidRange }

@@ -187,6 +187,11 @@ struct DrillPracticeView: View {
                     Button("提交") { Task { await submit() } }
                         .disabled(hanCount(answer) == 0 || isSubmitting)
                         .accessibilityIdentifier("drillSubmit")
+                    Button("显示答案") { Task { await reveal() } }
+                        .disabled(isSubmitting)
+                        .keyboardShortcut("d")
+                        .help("不作答，直接看原文与参考（⌘D）；不记入练习记录")
+                        .accessibilityIdentifier("drillReveal")
                 } else {
                     Button("下一题") { Task { await next() } }
                         .keyboardShortcut(.defaultAction)
@@ -215,25 +220,51 @@ struct DrillPracticeView: View {
         do {
             let service = model.service
             let evaluation = try await service.evaluateCouplet(prompt: question.prompt, answer: answer)
-            let origin = try await service.describe(question.source)
-            let converter = model.dictionary.converter
-            let ownReference = converter.simplified(TextSegmenter.hanOnly(question.reference))
-            var references: [CoupletResult.Reference] = []
-            for reference in evaluation.references.prefix(12)
-            where converter.simplified(TextSegmenter.hanOnly(reference.counterpart)) != ownReference {
-                references.append(.init(text: reference.counterpart, source: try await service.describe(reference.source),
-                                        item: reference.source))
-            }
+            let built = try await makeResult(question, references: evaluation.references,
+                                             commonCounterparts: evaluation.commonCounterparts, score: evaluation.score)
             try await service.recordDrill(question, answer: answer, level: evaluation.score.level)
-            result = CoupletResult(prompt: question.prompt, answer: answer, score: evaluation.score,
-                                   commonCounterparts: evaluation.commonCounterparts,
-                                   original: .init(text: question.reference, source: origin, item: question.source),
-                                   references: references, previous: previous)
+            result = built
         } catch let error as CoupletScoreError {
             model.errorMessage = error.description
         } catch {
             model.errorMessage = String(describing: error)
         }
+    }
+
+    /// 不作答直接看原文与参考，不记入练习记录。
+    private func reveal() async {
+        guard let question, result == nil, !isSubmitting else { return }
+        isSubmitting = true
+        defer { isSubmitting = false }
+        do {
+            let lookup = try await model.service.coupletReferences(for: question.prompt)
+            result = try await makeResult(question, references: lookup.references,
+                                          commonCounterparts: lookup.commonCounterparts, score: nil)
+        } catch let error as CoupletScoreError {
+            model.errorMessage = error.description
+        } catch {
+            model.errorMessage = String(describing: error)
+        }
+    }
+
+    /// 原文之外的参考去掉与原文相同的，至多 12 条；`score` 为 nil 时不显示作答。
+    private func makeResult(_ question: DrillQuestion, references: [DrillReference],
+                            commonCounterparts: [ParallelCounterpart], score: CoupletScore?) async throws -> CoupletResult {
+        let service = model.service
+        let origin = try await service.describe(question.source)
+        let converter = model.dictionary.converter
+        let ownReference = converter.simplified(TextSegmenter.hanOnly(question.reference))
+        var others: [CoupletResult.Reference] = []
+        for reference in references.prefix(12)
+        where converter.simplified(TextSegmenter.hanOnly(reference.counterpart)) != ownReference {
+            others.append(.init(text: reference.counterpart, source: try await service.describe(reference.source),
+                                item: reference.source, isPromptLeft: reference.isPromptLeft))
+        }
+        return CoupletResult(prompt: question.prompt, answer: score == nil ? nil : answer, score: score,
+                             commonCounterparts: commonCounterparts,
+                             original: .init(text: question.reference, source: origin, item: question.source,
+                                             isPromptLeft: question.isPromptLeft),
+                             references: others, previous: previous)
     }
 }
 
@@ -302,7 +333,7 @@ struct FreeCoupletView: View {
             var references: [CoupletResult.Reference] = []
             for reference in lookup.references.prefix(20) {
                 references.append(.init(text: reference.counterpart, source: try await service.describe(reference.source),
-                                        item: reference.source))
+                                        item: reference.source, isPromptLeft: reference.isPromptLeft))
             }
             result = CoupletResult(prompt: prompt, answer: score == nil ? nil : answer, score: score,
                                    commonCounterparts: lookup.commonCounterparts,
@@ -324,6 +355,8 @@ struct CoupletResult {
         let source: String
         /// 题库中的出处：出自语料时可查看全文，出自佩文对语时可查看韵府。
         let item: DrillItemSource?
+        /// 出在上边、`text` 在下边；为 false 时相反。收藏时按此排上下。
+        let isPromptLeft: Bool
     }
 
     let prompt: String
@@ -346,6 +379,8 @@ struct CoupletResultView: View {
     @State private var viewingWork: CorpusWork?
     @State private var viewingYunfuHead: Character?
     @State private var viewingExamples: ParallelExamplesQuery?
+    /// 本次结果中已收藏的对（按收藏的文字），避免重复收藏。
+    @State private var collected: Set<String> = []
 
 
     static func color(_ level: CoupletScore.Level) -> Color {
@@ -382,6 +417,7 @@ struct CoupletResultView: View {
                     Text(display(original.text)).font(.system(size: 20, design: .serif)).textSelection(.enabled)
                     Text(original.source).font(.caption).foregroundStyle(.secondary)
                     sourceButton(original.item)
+                    referenceCollectButton(original)
                 }
             }
             if !result.references.isEmpty {
@@ -392,6 +428,7 @@ struct CoupletResultView: View {
                             Text(display(reference.text)).font(.system(.body, design: .serif)).textSelection(.enabled)
                             Text(reference.source).font(.caption).foregroundStyle(.secondary)
                             sourceButton(reference.item)
+                            referenceCollectButton(reference)
                         }
                     }
                 }
@@ -408,7 +445,14 @@ struct CoupletResultView: View {
                             }
                             .buttonStyle(.link)
                             .font(.system(.body, design: .serif))
-                            .help("查看律诗中的这些对仗")
+                            .help("查看律诗中的这些对仗；右键可收藏这一对")
+                            .contextMenu {
+                                Button("收藏「\(model.dictionary.converter.simplified(TextSegmenter.hanOnly(result.prompt)))，\(counterpart.text)」") {
+                                    Task {
+                                        _ = await model.collectPair(TextSegmenter.hanOnly(result.prompt), with: counterpart.text)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -524,6 +568,30 @@ struct CoupletResultView: View {
         .help("收进收藏，标签「对仗/\(mode.displayName)」")
     }
 
+    /// 收藏原文或参考：按原书上下排列，出处记为摘录。
+    private func referenceCollectButton(_ reference: CoupletResult.Reference) -> some View {
+        let isCollected = collected.contains(reference.text)
+        return Button(isCollected ? "已收藏" : "收藏") {
+            Task { await collect(reference) }
+        }
+        .controlSize(.small)
+        .disabled(isCollected || reference.item == nil)
+        .help("收进收藏，出处记为摘录，标签「对仗/对词」或「对仗/对句」")
+    }
+
+    private func collect(_ reference: CoupletResult.Reference) async {
+        guard let item = reference.item, !collected.contains(reference.text) else { return }
+        do {
+            let draft = try await model.service.referencePhraseDraft(prompt: result.prompt, counterpart: reference.text,
+                                                                     isPromptLeft: reference.isPromptLeft, source: item)
+            if await model.addPhrase(draft) { collected.insert(reference.text) }
+        } catch let error as CoupletScoreError {
+            model.errorMessage = error.description
+        } catch {
+            model.errorMessage = String(describing: error)
+        }
+    }
+
     private func openWork(_ id: Int64) async {
         viewingWork = await model.corpusWork(id: id)
     }
@@ -568,10 +636,20 @@ struct ParallelExamplesSheet: View {
     @State private var total = 0
     @State private var isLoading = true
     @State private var viewingWork: CorpusWork?
+    @State private var isCollected = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("律诗对仗中「\(query.text)」与「\(query.counterpart)」相对").font(.headline)
+            HStack {
+                Text("律诗对仗中「\(query.text)」与「\(query.counterpart)」相对").font(.headline)
+                Spacer()
+                Button(isCollected ? "已收藏" : "收藏这一对") {
+                    Task { isCollected = await model.collectPair(query.text, with: query.counterpart) }
+                }
+                .controlSize(.small)
+                .disabled(isCollected || examples.isEmpty)
+                .help("收进收藏：用原诗字形，附到各首原诗的链接")
+            }
             if isLoading {
                 ProgressView().controlSize(.small)
             } else if examples.isEmpty {

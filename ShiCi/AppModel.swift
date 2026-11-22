@@ -249,6 +249,32 @@ final class AppModel {
         }
     }
 
+    /// 按收藏中的原诗链接取全文；已启用的语料中没有这首时提示并返回 nil。
+    func corpusWork(link: CorpusWorkLink) async -> CorpusWork? {
+        do {
+            guard let id = try await service.corpus.workID(textHash: link.textHash) else {
+                errorMessage = "已启用的语料中找不到\(link.summary)，所在语料包可能已删除或停用。"
+                return nil
+            }
+            return await corpusWork(id: id)
+        } catch {
+            errorMessage = String(describing: error)
+            return nil
+        }
+    }
+
+    /// 收藏律诗对仗中的一对字词，附到原诗的链接；成功时返回 true。
+    func collectPair(_ text: String, with counterpart: String) async -> Bool {
+        do {
+            return await addPhrase(try await service.pairPhraseDraft(of: text, with: counterpart))
+        } catch let error as CoupletScoreError {
+            errorMessage = error.description
+        } catch {
+            errorMessage = String(describing: error)
+        }
+        return false
+    }
+
     // MARK: - 读诗
 
     func markedPoem(_ id: UUID) -> MarkedPoem? {

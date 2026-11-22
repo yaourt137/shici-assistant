@@ -376,7 +376,7 @@ public final class LibraryStore {
             """, [.text(title), .text(author ?? ""), .text(body)], mapMarkedPoem).first
     }
 
-    /// 插入或更新圈点本（正文与来源不变）。
+    /// 插入或更新圈点本（来源不变；正文只会逐字换字形，见 `MarkedPoem.replaceText`）。
     public func save(_ poem: MarkedPoem) throws {
         func json<Value: Encodable>(_ value: Value) throws -> String {
             String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
@@ -385,7 +385,7 @@ public final class LibraryStore {
             INSERT INTO marked_poems (id, title, author, dynasty, origin, body, marks, notes, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, dynasty = excluded.dynasty,
-                marks = excluded.marks, notes = excluded.notes, updated_at = excluded.updated_at
+                body = excluded.body, marks = excluded.marks, notes = excluded.notes, updated_at = excluded.updated_at
             """, [.text(poem.id.uuidString), .text(poem.title), .optional(poem.author),
                   .optional(poem.dynasty), .text(try json(poem.origin)), .text(poem.body),
                   .text(try json(poem.marks)), .text(try json(poem.notes)),

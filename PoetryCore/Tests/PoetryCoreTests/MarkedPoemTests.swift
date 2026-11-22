@@ -127,6 +127,34 @@ struct MarkedPoemTests {
         #expect(throws: MarkedPoemError.invalidRange) { try poem.eraseMarks(in: range(0, 0, 0)) }
     }
 
+    @Test("换字形：逐字对应时换上新正文，圈点与批注不动；字数或换行不符时报错")
+    func replaceText() throws {
+        var marked = MarkedPoem(title: "登鹳雀楼", author: "王之涣", origin: .pasted, body: "白日依山尽，\n黄河入海流。")
+        try marked.applyMark(.circle, to: LineRange(line: 1, start: 0, length: 2))
+        try marked.addNote("壮阔", to: LineRange(line: 0, start: 0, length: 5))
+        let (marks, notes) = (marked.marks, marked.notes)
+        try marked.replaceText(title: " 登鸛雀樓 ", author: "王之渙", dynasty: "  ", body: "白日依山盡，\n黃河入海流。")
+        #expect(marked.body == "白日依山盡，\n黃河入海流。")
+        #expect(marked.title == "登鸛雀樓")
+        #expect(marked.author == "王之渙")
+        #expect(marked.dynasty == nil, "空白为 nil")
+        #expect(marked.marks == marks)
+        #expect(marked.notes == notes)
+        #expect(marked.text(of: LineRange(line: 1, start: 0, length: 2)) == "黃河")
+
+        let before = marked
+        #expect(throws: MarkedPoemError.textMismatch) {
+            try marked.replaceText(title: "", author: nil, dynasty: nil, body: "白日依山盡，黃河入海流。")
+        }
+        #expect(throws: MarkedPoemError.textMismatch) {
+            try marked.replaceText(title: "", author: nil, dynasty: nil, body: "白日依山盡，\n黃河入海流")
+        }
+        #expect(throws: MarkedPoemError.textMismatch, "换行位置不同") {
+            try marked.replaceText(title: "", author: nil, dynasty: nil, body: "白日依山盡\n，黃河入海流。")
+        }
+        #expect(marked == before, "报错时不改动")
+    }
+
     @Test("批注：按位置排序，可改可删；内容为空或找不到时报错")
     func notes() throws {
         var poem = poem()
@@ -306,6 +334,9 @@ struct MarkedPoemStoreTests {
         older.updatedAt = Date(timeIntervalSince1970: 3)
         try store.save(older)
         #expect(try store.markedPoems().first?.title == "甲二")
+        try older.replaceText(title: "甲二", author: nil, dynasty: nil, body: "白日依山尽")
+        try store.save(older)
+        #expect(try store.markedPoem(id: older.id)?.body == "白日依山尽", "换过字形的正文随之保存")
         try store.deleteMarkedPoem(id: older.id)
         #expect(try store.markedPoems().map(\.id) == [newer.id])
         try store.deleteMarkedPoem(id: UUID())

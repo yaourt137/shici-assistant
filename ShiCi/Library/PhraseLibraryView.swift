@@ -185,6 +185,7 @@ struct PhraseLibraryView: View {
 struct PhraseDetailView: View {
     @Environment(AppModel.self) private var model
     @State var phrase: Phrase
+    @State private var viewingWork: CorpusWork?
 
     var body: some View {
         Form {
@@ -219,6 +220,20 @@ struct PhraseDetailView: View {
                         Label("出处经语料核实", systemImage: "checkmark.seal").foregroundStyle(.green)
                     }
                 }
+                ForEach(phrase.provenance.corpusLinks ?? [], id: \.self) { link in
+                    LabeledContent("原诗") {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            VStack(alignment: .trailing, spacing: 2) {
+                                Text(link.summary)
+                                if let excerpt = link.excerpt {
+                                    Text(excerpt).font(.system(.callout, design: .serif)).foregroundStyle(.secondary)
+                                }
+                            }
+                            Button("查看原诗") { Task { viewingWork = await model.corpusWork(link: link) } }
+                                .controlSize(.small)
+                        }
+                    }
+                }
                 if phrase.provenance.kind == .agent {
                     LabeledContent("客户端", value: phrase.provenance.agentClient ?? "未知")
                     if let note = phrase.provenance.agentNote { LabeledContent("写入理由", value: note) }
@@ -250,6 +265,7 @@ struct PhraseDetailView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(item: $viewingWork) { CorpusWorkView(work: $0) }
     }
 }
 

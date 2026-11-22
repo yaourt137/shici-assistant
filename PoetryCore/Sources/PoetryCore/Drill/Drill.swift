@@ -94,6 +94,8 @@ public struct DrillQuestion: Sendable, Hashable, Identifiable {
     public let source: DrillItemSource
     /// 题目标识：模式与出题汉字的简体，不分来源。
     public let key: String
+    /// 出是原书（原诗）的上边；为 false 时出在下边。
+    public let isPromptLeft: Bool
 }
 
 /// 按字数筛选。
@@ -148,6 +150,27 @@ public struct DrillOptions: Sendable, Hashable {
 public struct DrillReference: Sendable, Hashable {
     public let counterpart: String
     public let source: DrillItemSource
+    /// 出在上边、`counterpart` 在下边；为 false 时相反。
+    public let isPromptLeft: Bool
+}
+
+/// 一对的文字，供收藏。
+public enum DrillCouplet {
+    static let trailingPunctuation: Set<Character> = ["，", "。", "；", "、", "！", "？", ",", ".", ";", "!", "?"]
+
+    /// 上下两边按原书顺序相连：两边各自去掉首尾空白与末尾标点；任一边内含逗号（长对）时以「；」相连，否则以「，」。
+    /// 任一边为空时返回 nil。
+    public static func text(prompt: String, counterpart: String, isPromptLeft: Bool) -> String? {
+        let trimmed = [prompt, counterpart].map { side -> String in
+            var text = Substring(side.trimmingCharacters(in: .whitespacesAndNewlines))
+            while let last = text.last, trailingPunctuation.contains(last) { text = text.dropLast() }
+            return String(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard trimmed.allSatisfy({ !$0.isEmpty }) else { return nil }
+        let (left, right) = isPromptLeft ? (trimmed[0], trimmed[1]) : (trimmed[1], trimmed[0])
+        let separator = trimmed.contains { $0.contains("，") || $0.contains(",") } ? "；" : "，"
+        return left + separator + right
+    }
 }
 
 /// 题库：各组对仗预先算好两边的题目标识，供随机抽题与查参考答案。
@@ -216,7 +239,8 @@ public struct DrillPool: Sendable {
                              prompt: chosen.leftIsPrompt ? item.left : item.right,
                              reference: chosen.leftIsPrompt ? item.right : item.left,
                              source: item.source,
-                             key: chosen.leftIsPrompt ? chosen.entry.leftKey : chosen.entry.rightKey)
+                             key: chosen.leftIsPrompt ? chosen.entry.leftKey : chosen.entry.rightKey,
+                             isPromptLeft: chosen.leftIsPrompt)
     }
 
     /// 题库中与 `prompt` 相对的各边（繁简不拘），同一对文字只取第一个出处。
@@ -226,15 +250,16 @@ public struct DrillPool: Sendable {
         var result: [DrillReference] = []
         for entry in entries {
             let counterpart: String
+            let isPromptLeft: Bool
             if entry.leftKey == key {
-                counterpart = entry.item.right
+                (counterpart, isPromptLeft) = (entry.item.right, true)
             } else if entry.rightKey == key {
-                counterpart = entry.item.left
+                (counterpart, isPromptLeft) = (entry.item.left, false)
             } else {
                 continue
             }
             if seen.insert(converter.simplified(TextSegmenter.hanOnly(counterpart))).inserted {
-                result.append(DrillReference(counterpart: counterpart, source: entry.item.source))
+                result.append(DrillReference(counterpart: counterpart, source: entry.item.source, isPromptLeft: isPromptLeft))
             }
         }
         return result

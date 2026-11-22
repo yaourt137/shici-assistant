@@ -57,6 +57,21 @@ public struct SourceInfo: Sendable, Hashable, Codable {
     }
 }
 
+/// 收藏关联的语料作品：以全文哈希定位（重新导入或换了语料包，只要有同一首就能找到），附显示用的出处与诗句。
+public struct CorpusWorkLink: Sendable, Hashable, Codable {
+    public var textHash: Int64
+    /// 出处说明，例如「〔唐〕王维《山居秋暝》」。
+    public var summary: String
+    /// 相关的诗句（原书字形），可空。
+    public var excerpt: String?
+
+    public init(textHash: Int64, summary: String, excerpt: String? = nil) {
+        self.textHash = textHash
+        self.summary = summary
+        self.excerpt = excerpt
+    }
+}
+
 public struct Provenance: Sendable, Hashable, Codable {
     public var kind: ProvenanceKind
     /// 正式出处（摘录时填写，或经语料反查确认）。
@@ -68,15 +83,19 @@ public struct Provenance: Sendable, Hashable, Codable {
     public var agentNote: String?
     /// agent 声称的出处，未经核实。
     public var claimedSource: SourceInfo?
+    /// 到原诗的链接（可多首）；旧数据没有此项。
+    public var corpusLinks: [CorpusWorkLink]?
 
     public init(kind: ProvenanceKind, source: SourceInfo? = nil, draftID: UUID? = nil,
-                agentClient: String? = nil, agentNote: String? = nil, claimedSource: SourceInfo? = nil) {
+                agentClient: String? = nil, agentNote: String? = nil, claimedSource: SourceInfo? = nil,
+                corpusLinks: [CorpusWorkLink]? = nil) {
         self.kind = kind
         self.source = source
         self.draftID = draftID
         self.agentClient = agentClient
         self.agentNote = agentNote
         self.claimedSource = claimedSource
+        self.corpusLinks = corpusLinks
     }
 
     public static let original = Provenance(kind: .original)

@@ -358,11 +358,13 @@ struct DrillPoolTests {
         for _ in 0..<30 {
             let question = pool.draw(DrillOptions(mode: .line), answeredKeys: [], using: &generator)
             #expect(question.map { ["明月松间照", "十月塞邊，颯颯寒霜驚戍旅"].contains($0.prompt) } == true)
+            #expect(question?.isPromptLeft == true, "对句只以出句出题")
         }
         var prompts = Set<String>()
         for _ in 0..<60 {
             if let question = pool.draw(DrillOptions(mode: .word, sources: [.shengLv]), answeredKeys: [], using: &generator) {
                 prompts.insert(question.prompt)
+                #expect(question.isPromptLeft == ["雲", "來鴻"].contains(question.prompt))
                 #expect(question.mode == .word)
                 #expect(question.source.kind == .shengLv)
             }
@@ -402,9 +404,37 @@ struct DrillPoolTests {
         let cloud = pool.references(for: "云")
         #expect(cloud.map(\.counterpart) == ["雨", "风"])
         #expect(cloud.first?.source == .primer(.shengLvQiMeng, sectionIndex: 0))
+        #expect(cloud.map(\.isPromptLeft) == [true, true])
         #expect(pool.references(for: "去燕").map(\.counterpart) == ["來鴻"])
+        #expect(pool.references(for: "去燕").map(\.isPromptLeft) == [false], "出在下边")
         #expect(pool.references(for: "无此词").isEmpty)
         #expect(pool.references(for: "").isEmpty)
+    }
+}
+
+@Suite("收藏一对")
+struct DrillCoupletTests {
+    @Test("按原书顺序相连，去掉末尾标点与空白")
+    func joining() {
+        #expect(DrillCouplet.text(prompt: "雲", counterpart: "雨", isPromptLeft: true) == "雲，雨")
+        #expect(DrillCouplet.text(prompt: "去燕", counterpart: "來鴻", isPromptLeft: false) == "來鴻，去燕")
+        #expect(DrillCouplet.text(prompt: " 明月松間照。", counterpart: "清泉石上流。\n", isPromptLeft: true) == "明月松間照，清泉石上流")
+        #expect(DrillCouplet.text(prompt: "感時花濺淚，", counterpart: "恨別鳥驚心！？", isPromptLeft: true) == "感時花濺淚，恨別鳥驚心")
+    }
+
+    @Test("长对内含逗号时以分号相连")
+    func longCouplet() {
+        #expect(DrillCouplet.text(prompt: "十月塞邊，颯颯寒霜驚戍旅", counterpart: "三冬江上，漫漫朔雪冷漁翁", isPromptLeft: true)
+                == "十月塞邊，颯颯寒霜驚戍旅；三冬江上，漫漫朔雪冷漁翁")
+        #expect(DrillCouplet.text(prompt: "三冬江上,漫漫朔雪冷漁翁", counterpart: "十月塞邊", isPromptLeft: false)
+                == "十月塞邊；三冬江上,漫漫朔雪冷漁翁", "半角逗号也算")
+    }
+
+    @Test("任一边为空或只有标点时为 nil")
+    func empty() {
+        #expect(DrillCouplet.text(prompt: "", counterpart: "雨", isPromptLeft: true) == nil)
+        #expect(DrillCouplet.text(prompt: "雲", counterpart: "  ", isPromptLeft: true) == nil)
+        #expect(DrillCouplet.text(prompt: "雲", counterpart: "。，", isPromptLeft: false) == nil)
     }
 }
 
@@ -500,6 +530,125 @@ struct DrillServiceTests {
         let moonOnly = try await service.coupletReferences(for: "月")
         #expect(moonOnly.commonCounterparts.map(\.text) == ["泉", "金"])
         await #expect(throws: CoupletScoreError.emptyPrompt) { try await service.coupletReferences(for: "。") }
+    }
+
+    @Test("收藏原文或参考：摘录，附出处，按字数打标签")
+    func referenceDraft() async throws {
+        let directory = try TemporaryDirectory()
+        let service = try makeService(directory)
+        _ = try await service.installPack(from: try DrillFixtures.makePack(in: directory))
+
+        let line = try #require(try await service.coupletReferences(for: "明月松间照").references.first)
+        let poem = try await service.referencePhraseDraft(prompt: "明月松间照", counterpart: line.counterpart,
+                                                          isPromptLeft: line.isPromptLeft, source: line.source)
+        #expect(poem.text == "明月松间照，清泉石上流")
+        #expect(poem.kind == .couplet)
+        #expect(poem.provenance.kind == .excerpt)
+        #expect(poem.provenance.source?.summary == "〔唐〕王维《山居秋暝》")
+        #expect(poem.tags == ["对仗/对句"])
+        #expect(poem.provenance.corpusLinks?.map(\.excerpt) == ["明月松間照，清泉石上流"], "出自语料的附原诗链接")
+
+        let primer = try await service.referencePhraseDraft(prompt: "去燕", counterpart: "來鴻", isPromptLeft: false,
+                                                            source: .primer(.shengLvQiMeng, sectionIndex: 0))
+        #expect(primer.text == "來鴻，去燕")
+        #expect(primer.provenance.corpusLinks == nil, "蒙书没有原诗链接")
+        #expect(primer.provenance.source?.title == PrimerWork.shengLvQiMeng.name)
+        #expect(primer.tags == ["对仗/对词"])
+        let yunfu = try await service.referencePhraseDraft(prompt: "愁", counterpart: "喜", isPromptLeft: true,
+                                                           source: .yunfu(head: "愁", groupID: 0))
+        #expect(yunfu.provenance.source?.title == "佩文韵府")
+        let missing = try await service.referencePhraseDraft(prompt: "天", counterpart: "地", isPromptLeft: true,
+                                                             source: .corpus(workID: 9_999, lineIndex: 0))
+        #expect(missing.provenance.source == nil, "语料中找不到作品时不记出处")
+        #expect(missing.provenance.kind == .excerpt)
+
+        await #expect(throws: CoupletScoreError.emptyPrompt) {
+            try await service.referencePhraseDraft(prompt: "，", counterpart: "雨", isPromptLeft: true, source: .yunfu(head: "雲", groupID: 0))
+        }
+        await #expect(throws: CoupletScoreError.emptyAnswer) {
+            try await service.referencePhraseDraft(prompt: "雲", counterpart: "", isPromptLeft: true, source: .yunfu(head: "雲", groupID: 0))
+        }
+
+        let saved = try await service.addPhrase(primer)
+        #expect(saved.phrase.text == "來鴻，去燕")
+        #expect(saved.phrase.provenance.source?.title == PrimerWork.shengLvQiMeng.name)
+        #expect(saved.phrase.tags.map(\.path) == ["对仗/对词"])
+    }
+
+    @Test("收藏律诗常对：原书字形与上下，出处记第一首，附各首链接与联数")
+    func pairDraft() async throws {
+        let directory = try TemporaryDirectory()
+        let service = try makeService(directory)
+        _ = try await service.installPack(from: try DrillFixtures.makePack(in: directory))
+        _ = try await service.prepareDrill()
+
+        let pair = try await service.pairPhraseDraft(of: "松间", with: "石上")
+        #expect(pair.text == "松間，石上", "原书字形")
+        #expect(pair.kind == .couplet)
+        #expect(pair.tags == ["对仗/对词"])
+        #expect(pair.note == "律诗对仗中相对 1 联")
+        #expect(pair.provenance.kind == .excerpt)
+        #expect(pair.provenance.source?.summary == "〔唐〕王维《山居秋暝》")
+        let link = try #require(pair.provenance.corpusLinks?.first)
+        #expect(pair.provenance.corpusLinks?.count == 1)
+        #expect(link.summary == "〔唐〕王维《山居秋暝》")
+        #expect(link.excerpt == "明月松間照，清泉石上流")
+        let workID = try #require(try await service.corpus.workID(textHash: link.textHash))
+        #expect(try await service.corpus.work(id: workID)?.title == "山居秋暝", "按全文哈希找回原诗")
+
+        #expect(try await service.pairPhraseDraft(of: "石上", with: "松間").text == "松間，石上", "按原诗上下排，与输入顺序无关")
+        let unlinked = try await service.pairPhraseDraft(of: "月", with: "泉", linkLimit: 0)
+        #expect(unlinked.provenance.corpusLinks == nil)
+        #expect(unlinked.note == "律诗对仗中相对 1 联，只链接前 0 首")
+
+        await #expect(throws: LibraryError.notFound("律诗对仗中「月」与「雪」相对的联")) {
+            try await service.pairPhraseDraft(of: "月", with: "雪")
+        }
+        await #expect(throws: CoupletScoreError.emptyPrompt) { try await service.pairPhraseDraft(of: "，", with: "泉") }
+        await #expect(throws: CoupletScoreError.emptyAnswer) { try await service.pairPhraseDraft(of: "月", with: "") }
+
+        let saved = try await service.addPhrase(pair)
+        #expect(try service.library.phrase(id: saved.phrase.id)?.provenance.corpusLinks == [link], "链接随收藏保存")
+    }
+
+    @Test("原诗链接：全文哈希、原书字形的句子；停用语料包后找不到")
+    func corpusLinks() async throws {
+        let directory = try TemporaryDirectory()
+        let service = try makeService(directory)
+        _ = try await service.installPack(from: try DrillFixtures.makePack(in: directory))
+        let line = try #require(try await service.corpus.usages(of: "感时花溅泪").first)
+        let lines = try #require(try await service.corpus.originalLines(id: line.workID))
+        #expect(lines.prefix(3) == ["國破山河在", "城春草木深", "感時花濺淚"])
+        #expect(try await service.corpus.originalLines(id: 99_999) == nil)
+        #expect(try await service.corpus.textHash(ofWork: 99_999) == nil)
+
+        let link = try #require(try await service.corpusLink(workID: line.workID, lineIndex: 2))
+        #expect(link.summary == "〔唐〕杜甫《春望》")
+        #expect(link.excerpt == "感時花濺淚，恨別鳥驚心")
+        #expect(try await service.corpusLink(workID: line.workID, lineIndex: 7)?.excerpt == "渾欲不勝簪", "末句没有下一句")
+        #expect(try await service.corpusLink(workID: line.workID, lineIndex: 99)?.excerpt == nil)
+        #expect(try await service.corpusLink(workID: line.workID, lineIndex: nil)?.excerpt == nil)
+        #expect(try await service.corpusLink(workID: 99_999, lineIndex: 0) == nil)
+        #expect(try await service.corpus.workID(textHash: link.textHash) == line.workID)
+        #expect(try await service.corpus.workID(textHash: 12_345) == nil)
+
+        try SQLiteDatabase(path: AppPaths(root: directory.url.appendingPathComponent("data")).corpus.path)
+            .execute("UPDATE works SET text_hash = NULL")
+        #expect(try await service.corpus.textHash(ofWork: line.workID) == link.textHash, "旧版语料没有哈希时先补算")
+        #expect(try await service.corpus.workID(textHash: link.textHash) == line.workID)
+
+        try await service.corpus.setEnabled(false, packID: "drill-pack")
+        #expect(try await service.corpus.workID(textHash: link.textHash) == nil, "停用的语料包不取")
+    }
+
+    @Test("旧版收藏没有原诗链接，读出为 nil；有链接的可往返")
+    func provenanceCoding() throws {
+        let old = #"{"kind":"摘录","source":{"title":"春望","isVerified":false}}"#
+        let decoded = try JSONDecoder().decode(Provenance.self, from: Data(old.utf8))
+        #expect(decoded.corpusLinks == nil)
+        #expect(decoded.source?.title == "春望")
+        let linked = Provenance(kind: .excerpt, corpusLinks: [CorpusWorkLink(textHash: -5, summary: "杜甫《春望》", excerpt: nil)])
+        #expect(try JSONDecoder().decode(Provenance.self, from: JSONEncoder().encode(linked)) == linked)
     }
 
     @Test("常对的用例：附出处与位置，繁简不论")

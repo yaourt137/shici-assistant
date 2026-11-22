@@ -112,6 +112,7 @@ struct MarkedPoemReader: View {
     @State private var focusedNoteID: UUID?
     @State private var noteDraft: NoteDraft?
     @State private var collecting: String?
+    @State private var isConverting = false
 
     private var poem: MarkedPoem? { model.markedPoem(poemID) }
 
@@ -136,6 +137,13 @@ struct MarkedPoemReader: View {
             }
             .sheet(isPresented: Binding(get: { collecting != nil }, set: { if !$0 { collecting = nil } })) {
                 PhraseEditorSheet(initialText: collecting ?? "", initialKind: .excerpt, draftID: nil, initialSource: poem.source)
+            }
+            .sheet(isPresented: $isConverting) {
+                ConvertPoemSheet(poem: poem) { converted in
+                    model.updateMarkedPoem(poemID, actionName: "转为繁体", undoManager: undoManager) {
+                        try $0.replaceText(title: converted[0], author: converted[1], dynasty: converted[2], body: converted[3])
+                    }
+                }
             }
         } else {
             ContentUnavailableView("这首已删除", systemImage: "text.book.closed")
@@ -183,6 +191,12 @@ struct MarkedPoemReader: View {
                 .labelsHidden()
                 .fixedSize()
                 .disabled(!showTones && !showRhymes)
+                if model.dictionary.converter.scriptKind(of: [poem.title, poem.author ?? "", poem.body].joined(separator: "\n"))
+                    != .traditional {
+                    Button("转为繁体") { isConverting = true }
+                        .help("把题目、作者与正文转为繁体；圈点与批注位置不变，可撤销")
+                        .accessibilityIdentifier("readingToTraditional")
+                }
             }
             .toggleStyle(.checkbox)
             .controlSize(.small)
@@ -644,6 +658,16 @@ struct PastePoemSheet: View {
     @State private var author = ""
     @State private var dynasty = ""
     @State private var text = ""
+    @State private var isConverting = false
+    /// 转繁体后一字多繁、待核对的字；转换后又手动改过文字则不再显示（位置可能已错开）。
+    @State private var pendingChoices: [TraditionalChoice] = []
+    @State private var convertedFields: [String] = []
+
+    private var fields: [String] { [title, author, dynasty, text] }
+
+    private var scriptKind: ScriptKind {
+        model.dictionary.converter.scriptKind(of: fields.joined(separator: "\n"))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -669,6 +693,15 @@ struct PastePoemSheet: View {
                 .frame(minHeight: 220)
                 .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
                 .accessibilityIdentifier("pasteBody")
+            if !TextSegmenter.hanOnly(text).isEmpty {
+                scriptRow
+            }
+            if !pendingChoices.isEmpty, convertedFields == fields {
+                TraditionalChoicesView(choices: pendingChoices, fields: fields) { choice, character in
+                    setField(choice.field, to: TraditionalConversion.replacing(at: choice.offset, with: character, in: fields[choice.field]))
+                    convertedFields = fields
+                }
+            }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -684,6 +717,159 @@ struct PastePoemSheet: View {
         }
         .padding(20)
         .frame(width: 480)
+    }
+
+    private var scriptRow: some View {
+        HStack(spacing: 8) {
+            Text("字形：\(scriptKind.rawValue)").font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("pasteScript")
+            if scriptKind != .traditional {
+                Button("转为繁体") { Task { await convertToTraditional() } }
+                    .controlSize(.small)
+                    .disabled(isConverting)
+                    .help("按繁体语料中的原句转换；语料中没有的句子逐字查字表，一字多繁的列在下面供核对")
+                    .accessibilityIdentifier("pasteToTraditional")
+            }
+        }
+    }
+
+    /// 按 `fields` 的顺序（题目、作者、朝代、正文）写回一栏。
+    private func setField(_ index: Int, to value: String) {
+        switch index {
+        case 0: title = value
+        case 1: author = value
+        case 2: dynasty = value
+        default: text = value
+        }
+    }
+
+    private func convertToTraditional() async {
+        isConverting = true
+        defer { isConverting = false }
+        do {
+            let result = try await TraditionalChoicesView.convert(fields, service: model.service)
+            for (index, value) in result.fields.enumerated() { setField(index, to: value) }
+            pendingChoices = result.choices
+            convertedFields = fields
+        } catch {
+            model.errorMessage = String(describing: error)
+        }
+    }
+}
+
+/// 转繁体后一字多繁、待核对的字：`field` 为在题目、作者、朝代、正文中的序号。
+struct TraditionalChoice: Hashable {
+    let field: Int
+    let offset: Int
+    let candidates: [Character]
+}
+
+/// 列出待核对的字（连同前后各两字），点开可换成其他繁体。各栏依次为题目、作者、朝代、正文。
+struct TraditionalChoicesView: View {
+    static let fieldNames = ["题目", "作者", "朝代", "正文"]
+
+    let choices: [TraditionalChoice]
+    let fields: [String]
+    let onPick: (TraditionalChoice, Character) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("以下字有多种繁体，已取最常用的，点击可改：").font(.caption).foregroundStyle(.secondary)
+            FlowLayout(spacing: 8) {
+                ForEach(choices, id: \.self) { choice in
+                    Menu {
+                        ForEach(choice.candidates, id: \.self) { candidate in
+                            Button(String(candidate)) { onPick(choice, candidate) }
+                        }
+                    } label: {
+                        context(of: choice)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+            }
+        }
+    }
+
+    /// 待核对的字连同前后各两字，该字着色；跨行处以空格代替换行；正文以外注明栏目。
+    private func context(of choice: TraditionalChoice) -> Text {
+        guard fields.indices.contains(choice.field) else { return Text("") }
+        let characters = Array(fields[choice.field]).map { $0.isNewline ? " " : $0 }
+        guard characters.indices.contains(choice.offset) else { return Text("") }
+        let before = String(characters[max(0, choice.offset - 2)..<choice.offset])
+        let after = String(characters[(choice.offset + 1)..<min(characters.count, choice.offset + 3)])
+        let prefix = choice.field == TraditionalChoicesView.fieldNames.count - 1 ? "" : TraditionalChoicesView.fieldNames[choice.field] + " "
+        return Text(prefix + before) + Text(String(characters[choice.offset])).foregroundColor(.accentColor).bold() + Text(after)
+    }
+
+    /// 逐栏转为繁体，汇总待核对的字。
+    static func convert(_ fields: [String], service: PoetryService) async throws -> (fields: [String], choices: [TraditionalChoice]) {
+        var converted: [String] = []
+        var choices: [TraditionalChoice] = []
+        for (index, field) in fields.enumerated() {
+            let result = try await service.traditionalConversion(of: field)
+            converted.append(result.text)
+            choices += result.choices.map { TraditionalChoice(field: index, offset: $0.offset, candidates: $0.candidates) }
+        }
+        return (converted, choices)
+    }
+}
+
+/// 把一本圈点本转为繁体：先预览并核对一字多繁的字，确认后换上（圈点与批注位置不变）。
+struct ConvertPoemSheet: View {
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    let poem: MarkedPoem
+    /// 依次为题目、作者、朝代、正文。
+    let onConvert: ([String]) -> Void
+
+    @State private var fields: [String] = []
+    @State private var choices: [TraditionalChoice] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("转为繁体").font(.headline)
+            if fields.count == 4 {
+                Text((fields[0].isEmpty ? "无题" : fields[0]) + "　" + SourceInfo(author: fields[1], dynasty: fields[2]).summary)
+                    .font(.system(.title3, design: .serif))
+                ScrollView {
+                    Text(fields[3]).font(.system(size: 16, design: .serif)).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 160, maxHeight: 280)
+                if !choices.isEmpty {
+                    TraditionalChoicesView(choices: choices, fields: fields) { choice, character in
+                        fields[choice.field] = TraditionalConversion.replacing(at: choice.offset, with: character, in: fields[choice.field])
+                    }
+                }
+                Text("圈点与批注位置不变；转换后可用「编辑 > 撤销」恢复。批注内容不转换。").font(.caption).foregroundStyle(.secondary)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("转换") {
+                    onConvert(fields)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(fields.count != 4)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
+        .task {
+            do {
+                let result = try await TraditionalChoicesView.convert([poem.title, poem.author ?? "", poem.dynasty ?? "", poem.body],
+                                                                      service: model.service)
+                fields = result.fields
+                choices = result.choices
+            } catch {
+                model.errorMessage = String(describing: error)
+                dismiss()
+            }
+        }
     }
 }
 
